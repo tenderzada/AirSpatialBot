@@ -7,13 +7,17 @@ data/
 *.zip
 images/
 
-# 模型文件
-models/
+# 模型权重文件（保留Python代码）
+models/AirSpatialBot/
 *.bin
 *.safetensors
 *.pt
 *.pth
 *.ckpt
+
+# 但不忽略hierarchical_uav/models的Python代码
+!hierarchical_uav/models/
+!hierarchical_uav/models/*.py
 
 # 输出文件
 outputs/
