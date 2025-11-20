@@ -6,6 +6,7 @@ and return memory retrievals.
 """
 
 import torch
+import torch.nn as nn
 import socket
 import pickle
 import threading
