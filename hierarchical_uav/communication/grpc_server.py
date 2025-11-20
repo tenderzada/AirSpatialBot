@@ -160,6 +160,14 @@ class HUAVServer:
                         expanded_query
                     )
 
+                    # If cache miss, add to cache for future queries
+                    if not cache_hit:
+                        self.huav_model.mac_layer.neural_memory.add_to_cache(
+                            expanded_query,
+                            value_vector
+                        )
+                        logger.debug(f"Added query to cache (cache size: {len(self.huav_model.mac_layer.neural_memory.episodic_cache['keys'])})")
+
                     if cache_hit:
                         self.cache_hits += 1
 
