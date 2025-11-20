@@ -375,13 +375,15 @@ def run_luav_eval(
                 # Use standard LLaVA generation for all cases
                 # This avoids potential issues with the generate_with_memory wrapper
                 # Note: LLaVA's generate() expects 'inputs' not 'input_ids'
-                output_ids = luav_model.llava_model.generate(
-                    inputs=input_ids,  # Changed from input_ids= to inputs=
-                    images=image_tensor,
-                    max_new_tokens=512,
-                    temperature=0.2,
-                    do_sample=True
-                )
+                # Use autocast for 8-bit models to handle dtype mismatches
+                with torch.cuda.amp.autocast(enabled=config.load_8bit, dtype=torch.float16):
+                    output_ids = luav_model.llava_model.generate(
+                        inputs=input_ids,  # Changed from input_ids= to inputs=
+                        images=image_tensor,
+                        max_new_tokens=512,
+                        do_sample=False,  # Use greedy decoding for stability with 8-bit
+                        num_beams=1
+                    )
 
             # Decode answer
             answer = luav_model.tokenizer.decode(
