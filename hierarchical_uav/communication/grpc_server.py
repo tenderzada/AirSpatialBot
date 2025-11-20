@@ -29,6 +29,7 @@ class HUAVServer:
         host: Server host address
         port: Server port
         max_connections: Maximum concurrent connections
+        query_dim: Dimension of query vectors from L-UAV (default: 256)
     """
 
     def __init__(
@@ -36,12 +37,14 @@ class HUAVServer:
         huav_model,
         host: str = "localhost",
         port: int = 50051,
-        max_connections: int = 10
+        max_connections: int = 10,
+        query_dim: int = 256
     ):
         self.huav_model = huav_model
         self.host = host
         self.port = port
         self.max_connections = max_connections
+        self.query_dim = query_dim
 
         self.server_socket = None
         self.is_running = False
@@ -50,6 +53,15 @@ class HUAVServer:
         # Statistics
         self.total_requests = 0
         self.cache_hits = 0
+
+        # Query projection layer (256D query -> memory_dim)
+        # This expands compact L-UAV queries to H-UAV memory space
+        if hasattr(huav_model, 'mac_layer'):
+            memory_dim = huav_model.mac_layer.neural_memory.input_dim
+            self.query_projection = nn.Linear(query_dim, memory_dim).to(huav_model.config.device)
+            logger.info(f"Created query projection: {query_dim}D -> {memory_dim}D")
+        else:
+            self.query_projection = None
 
     def start(self):
         """Start the H-UAV server in a background thread."""
@@ -137,17 +149,22 @@ class HUAVServer:
             # Retrieve from memory
             cache_hit = False  # Initialize cache_hit
             with torch.no_grad():
-                if hasattr(self.huav_model, 'mac_layer'):
+                if hasattr(self.huav_model, 'mac_layer') and self.query_projection is not None:
+                    # Project compact query to memory dimension
+                    expanded_query = self.query_projection(query_vector)
+                    logger.debug(f"Expanded query from {query_vector.shape} to {expanded_query.shape}")
+
+                    # Retrieve from MAC memory
                     value_vector, cache_hit = self.huav_model.mac_layer.neural_memory.retrieve_with_cache(
-                        query_vector
+                        expanded_query
                     )
 
                     if cache_hit:
                         self.cache_hits += 1
 
                 else:
-                    # Fallback if no MAC layer
-                    value_vector = query_vector  # Identity
+                    # Fallback if no MAC layer: return query as-is
+                    value_vector = query_vector
 
             self.total_requests += 1
 
@@ -192,9 +209,15 @@ class HUAVServer:
     def _send_error_response(self, client_socket: socket.socket, error_msg: str, request: Optional[Dict] = None):
         """Send an error response to the client."""
         try:
+            # Determine appropriate value dimension
+            if hasattr(self.huav_model, 'mac_layer'):
+                value_dim = self.huav_model.mac_layer.neural_memory.output_dim
+            else:
+                value_dim = self.query_dim
+
             # Create error response with dummy value
             error_response = {
-                'value': np.zeros(256),  # Default query dimension
+                'value': np.zeros(value_dim),
                 'cache_hit': False,
                 'request_id': request.get('request_id', 0) if request else 0,
                 'success': False,
