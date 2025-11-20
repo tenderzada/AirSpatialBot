@@ -267,6 +267,12 @@ def run_luav_eval(
                 image_tensor = luav_model.image_processor.preprocess(image, return_tensors='pt')['pixel_values']
                 image_tensor = image_tensor.to(config.device)
 
+                # For 8-bit models, ensure image tensor dtype matches vision tower
+                # Get vision tower dtype to ensure compatibility
+                vision_tower = luav_model.llava_model.get_model().get_vision_tower()
+                if hasattr(vision_tower, 'dtype'):
+                    image_tensor = image_tensor.to(dtype=vision_tower.dtype)
+
                 # Extract features for self-matching
                 image_features = extract_image_features(luav_model, image_path, bbox_3d)
                 image_features = image_features.unsqueeze(0)  # [1, hidden_size]
