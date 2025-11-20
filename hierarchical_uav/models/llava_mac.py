@@ -68,6 +68,11 @@ class LLaVAWithMAC(nn.Module):
             print(f"Loading image processor from {vision_tower_name}...")
             self.image_processor = CLIPImageProcessor.from_pretrained(vision_tower_name)
 
+        # Ensure vision tower is loaded
+        vision_tower = self.llava_model.get_model().get_vision_tower()
+        if hasattr(vision_tower, 'load_model'):
+            vision_tower.load_model()
+
         print(f"✓ Base LLaVA model loaded")
 
         # Add MAC layers if enabled
