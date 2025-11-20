@@ -281,6 +281,11 @@ def run_luav_eval(
             # Tokenize
             input_ids = luav_model.tokenizer(prompt, return_tensors='pt')['input_ids'].to(config.device)
 
+            # Validate input_ids
+            if input_ids is None or input_ids.shape[0] == 0:
+                logger.error(f"Sample {i}: Invalid input_ids, skipping")
+                continue
+
             # Decision: query H-UAV or proceed locally
             memory_value = None
             cache_hit = False
@@ -306,11 +311,16 @@ def run_luav_eval(
                 source = "local"
                 local_count += 1
 
+            # Validate image_tensor
+            if image_tensor is None:
+                logger.error(f"Sample {i}: image_tensor is None, skipping")
+                continue
+
             # Generate answer with optional memory augmentation
             with torch.no_grad():
                 if memory_value is not None:
                     # Use H-UAV memory to enhance generation
-                    logger.debug(f"Generating with memory: image_tensor={image_tensor.shape if image_tensor is not None else 'None'}, memory_value={memory_value.shape if memory_value is not None else 'None'}")
+                    logger.debug(f"Sample {i}: Generating with memory - input_ids.shape={input_ids.shape}, image_tensor.shape={image_tensor.shape}, memory_value.shape={memory_value.shape}")
                     output_ids = luav_model.generate_with_memory(
                         input_ids=input_ids,
                         images=image_tensor,
@@ -321,7 +331,7 @@ def run_luav_eval(
                     )
                 else:
                     # Standard generation without memory
-                    logger.debug(f"Generating without memory: image_tensor={image_tensor.shape if image_tensor is not None else 'None'}")
+                    logger.debug(f"Sample {i}: Generating without memory - input_ids.shape={input_ids.shape}, image_tensor.shape={image_tensor.shape}")
                     output_ids = luav_model.llava_model.generate(
                         input_ids=input_ids,
                         images=image_tensor,

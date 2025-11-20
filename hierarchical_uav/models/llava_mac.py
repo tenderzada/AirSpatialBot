@@ -272,6 +272,16 @@ class LLaVAWithMAC(nn.Module):
         Returns:
             generated_ids: [batch_size, generated_len] token IDs
         """
+        # Validate inputs before passing to LLaVA
+        if input_ids is None:
+            raise ValueError("input_ids cannot be None")
+        if images is None:
+            raise ValueError("images cannot be None")
+
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.debug(f"generate_with_memory: input_ids.shape={input_ids.shape}, images.shape={images.shape}")
+
         # For now, simply use standard generation
         # Memory features serve as validation that H-UAV has processed this query
         # TODO: Implement actual memory injection by modifying LLaVA's forward pass
