@@ -84,6 +84,10 @@ class QueryKeyGenerator(nn.Module):
             query: [batch_size, query_dim] compact query vector
             key: [batch_size, key_dim] key vector for matching
         """
+        # Ensure inputs are float32
+        image_features = image_features.float()
+        bbox_3d = bbox_3d.float()
+
         # Concatenate features
         combined = torch.cat([image_features, bbox_3d], dim=-1)
 
@@ -153,6 +157,10 @@ class SelfMatchingGate(nn.Module):
             scores: [batch_size] self-matching scores (cosine similarity)
             should_query: [batch_size] boolean tensor, True if should query H-UAV
         """
+        # Ensure inputs are float32
+        query = query.float()
+        key = key.float()
+
         # Project key to query dimension
         key_projected = self.key_projection(key)  # [batch_size, query_dim]
 

@@ -126,6 +126,9 @@ class NeuralMemory(nn.Module):
         if len(self.episodic_cache['keys']) > 0:
             cache_keys = torch.stack(self.episodic_cache['keys'])  # [N, input_dim]
 
+            # Ensure cache_keys are on same device and dtype as query
+            cache_keys = cache_keys.to(device=query.device, dtype=query.dtype)
+
             # Compute cosine similarity
             query_norm = F.normalize(query.unsqueeze(0), dim=1)
             cache_keys_norm = F.normalize(cache_keys, dim=1)
@@ -143,6 +146,8 @@ class NeuralMemory(nn.Module):
             if max_sim > similarity_threshold:
                 # Cache hit!
                 cached_value = self.episodic_cache['values'][max_idx]
+                # Ensure cached_value is on same device as query
+                cached_value = cached_value.to(device=query.device, dtype=query.dtype)
                 return cached_value, True
 
         # Cache miss - compute via MLP
