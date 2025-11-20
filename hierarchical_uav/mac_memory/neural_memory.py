@@ -105,7 +105,7 @@ class NeuralMemory(nn.Module):
     def retrieve_with_cache(
         self,
         query: torch.Tensor,
-        similarity_threshold: float = 0.85
+        similarity_threshold: float = 0.70
     ) -> Tuple[torch.Tensor, bool]:
         """
         Retrieve from memory with episodic cache lookup.
@@ -116,6 +116,7 @@ class NeuralMemory(nn.Module):
         Args:
             query: [input_dim] query tensor
             similarity_threshold: Cosine similarity threshold for cache hit
+                                 (default: 0.70, lower = more cache hits)
 
         Returns:
             value: [output_dim] retrieved value
@@ -132,6 +133,12 @@ class NeuralMemory(nn.Module):
 
             # Check for high-confidence match
             max_sim, max_idx = similarities.max(dim=0)
+
+            # Log similarity for debugging
+            if len(similarities) > 0 and hasattr(torch, 'get_default_dtype'):
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.debug(f"Cache lookup: max_sim={max_sim.item():.4f}, threshold={similarity_threshold:.4f}, cache_size={len(self.episodic_cache['keys'])}")
 
             if max_sim > similarity_threshold:
                 # Cache hit!
