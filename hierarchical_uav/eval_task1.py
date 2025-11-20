@@ -18,9 +18,14 @@ import torch
 import json
 import os
 import sys
+import logging
 from pathlib import Path
 from tqdm import tqdm
 from typing import Dict, List
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -278,21 +283,26 @@ def run_luav_eval(
 
             # Decision: query H-UAV or proceed locally
             memory_value = None
+            cache_hit = False
             if should_query[0].item():
                 # Query H-UAV for memory augmentation
-                value, cache_hit = client.query_huav(query[0])
-                if value is not None:
-                    memory_value = value.unsqueeze(0).to(config.device)  # [1, memory_dim]
-                    source = "huav"
-                    remote_count += 1
-                else:
-                    # H-UAV query failed, fallback to local
-                    cache_hit = False
+                try:
+                    value, cache_hit = client.query_huav(query[0])
+                    if value is not None:
+                        memory_value = value.unsqueeze(0).to(config.device)  # [1, memory_dim]
+                        source = "huav"
+                        remote_count += 1
+                    else:
+                        # H-UAV returned None, fallback to local
+                        source = "local_fallback"
+                        local_count += 1
+                except Exception as e:
+                    # H-UAV query failed (timeout, connection error, etc.)
+                    logger.warning(f"H-UAV query failed: {e}, falling back to local processing")
                     source = "local_fallback"
                     local_count += 1
             else:
                 # Proceed locally without H-UAV memory
-                cache_hit = False
                 source = "local"
                 local_count += 1
 
@@ -300,6 +310,7 @@ def run_luav_eval(
             with torch.no_grad():
                 if memory_value is not None:
                     # Use H-UAV memory to enhance generation
+                    logger.debug(f"Generating with memory: image_tensor={image_tensor.shape if image_tensor is not None else 'None'}, memory_value={memory_value.shape if memory_value is not None else 'None'}")
                     output_ids = luav_model.generate_with_memory(
                         input_ids=input_ids,
                         images=image_tensor,
@@ -310,6 +321,7 @@ def run_luav_eval(
                     )
                 else:
                     # Standard generation without memory
+                    logger.debug(f"Generating without memory: image_tensor={image_tensor.shape if image_tensor is not None else 'None'}")
                     output_ids = luav_model.llava_model.generate(
                         input_ids=input_ids,
                         images=image_tensor,
@@ -337,7 +349,10 @@ def run_luav_eval(
             })
 
         except Exception as e:
+            import traceback
             print(f"\nError processing sample {i}: {e}")
+            print(f"Traceback: {traceback.format_exc()}")
+            logger.error(f"Full error details for sample {i}:", exc_info=True)
             continue
 
     # Save results
