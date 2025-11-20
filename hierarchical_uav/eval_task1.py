@@ -27,6 +27,87 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from hierarchical_uav.models import LLaVAWithMAC, UAVConfig, UAVType
 from hierarchical_uav.communication import HUAVServer, LUAVClient, SelfMatchingModule
+from PIL import Image
+import numpy as np
+
+
+def extract_image_features(
+    model: LLaVAWithMAC,
+    image_path: str,
+    bbox_3d: torch.Tensor
+) -> torch.Tensor:
+    """
+    Extract image features from LLaVA's vision encoder.
+
+    Args:
+        model: LLaVA model instance
+        image_path: Path to the image
+        bbox_3d: [7] or [batch, 7] 3D bounding box parameters
+
+    Returns:
+        features: [hidden_size] or [batch, hidden_size] image features
+    """
+    try:
+        # Load and process image
+        image = Image.open(image_path).convert('RGB')
+        image_tensor = model.image_processor.preprocess(image, return_tensors='pt')['pixel_values']
+        image_tensor = image_tensor.to(model.config.device)
+
+        # Extract features using vision tower
+        with torch.no_grad():
+            image_features = model.llava_model.get_model().get_vision_tower()(image_tensor)
+            # Use mm_projector to get final feature dimension
+            image_features = model.llava_model.get_model().mm_projector(image_features)
+
+            # Average pool over spatial dimensions to get single feature vector
+            if len(image_features.shape) == 3:  # [1, num_patches, hidden_size]
+                image_features = image_features.mean(dim=1)  # [1, hidden_size]
+
+        return image_features.squeeze(0)  # [hidden_size]
+
+    except Exception as e:
+        # Fallback to random features if image cannot be loaded
+        print(f"Warning: Could not load image {image_path}, using random features: {e}")
+        hidden_size = model.llava_model.config.hidden_size
+        return torch.randn(hidden_size).to(model.config.device)
+
+
+def parse_bbox_3d(sample: Dict) -> torch.Tensor:
+    """
+    Parse 3D bounding box from sample data.
+
+    Args:
+        sample: Data sample containing bbox info
+
+    Returns:
+        bbox_3d: [7] tensor (x, y, z, l, w, h, θ)
+    """
+    # Try to extract from sample, otherwise use default
+    if '3d_bbox' in sample:
+        bbox_data = sample['3d_bbox']
+        bbox_3d = torch.tensor([
+            bbox_data.get('x', 0.0),
+            bbox_data.get('y', 0.0),
+            bbox_data.get('z', 0.0),
+            bbox_data.get('l', 1.0),
+            bbox_data.get('w', 1.0),
+            bbox_data.get('h', 1.0),
+            bbox_data.get('theta', 0.0)
+        ], dtype=torch.float32)
+    elif 'bbox' in sample:
+        # Try 2D bbox, extend to 3D
+        bbox_2d = sample['bbox']
+        bbox_3d = torch.tensor([
+            bbox_2d[0], bbox_2d[1], 0.0,  # x, y, z
+            bbox_2d[2] - bbox_2d[0],      # l (width)
+            bbox_2d[3] - bbox_2d[1],      # w (height)
+            1.0, 0.0                       # h, theta (default)
+        ], dtype=torch.float32)
+    else:
+        # Default normalized bbox
+        bbox_3d = torch.tensor([0.5, 0.5, 0.0, 0.1, 0.1, 1.0, 0.0], dtype=torch.float32)
+
+    return bbox_3d
 
 
 def load_task1_data(data_path: str) -> List[Dict]:
@@ -154,10 +235,23 @@ def run_luav_eval(
 
     for i, sample in enumerate(tqdm(test_data, desc="L-UAV Evaluation")):
         try:
-            # Extract features (simplified - in practice, process image)
-            # For now, use mock features
-            image_features = torch.randn(1, luav_model.llava_model.config.hidden_size).to(config.device)
-            bbox_3d = torch.randn(1, 7).to(config.device)  # Mock 3D bbox
+            # Parse 3D bounding box from sample
+            bbox_3d = parse_bbox_3d(sample).unsqueeze(0).to(config.device)  # [1, 7]
+
+            # Extract real image features
+            # Get image path from sample
+            image_id = sample.get('image_id', sample.get('image', ''))
+            image_path = os.path.join(config.image_dir, image_id) if hasattr(config, 'image_dir') else None
+
+            if image_path and os.path.exists(image_path):
+                # Extract real features from image
+                image_features = extract_image_features(luav_model, image_path, bbox_3d)
+                image_features = image_features.unsqueeze(0)  # [1, hidden_size]
+            else:
+                # Fallback: Use random features with warning (only once per image)
+                if i == 0 or (i % 100 == 0):
+                    print(f"\nWarning: Image not found at {image_path}, using random features")
+                image_features = torch.randn(1, luav_model.llava_model.config.hidden_size).to(config.device)
 
             # Generate query and compute self-matching
             with torch.no_grad():
@@ -213,6 +307,21 @@ def run_luav_eval(
     print(f"  Total queries: {sm_stats['total_queries']}")
     print(f"  H-UAV queries: {sm_stats['huav_queries']}")
 
+    print(f"\nSelf-matching score distribution:")
+    print(f"  Mean: {sm_stats['score_mean']:.4f}")
+    print(f"  Std:  {sm_stats['score_std']:.4f}")
+    print(f"  Min:  {sm_stats['score_min']:.4f}")
+    print(f"  Max:  {sm_stats['score_max']:.4f}")
+
+    # Show score histogram
+    score_list = [r['self_match_score'] for r in results]
+    bins = [0, 0.3, 0.5, 0.7, 0.9, 1.0]
+    print(f"\nScore distribution by range:")
+    for i in range(len(bins)-1):
+        count = sum(1 for s in score_list if bins[i] <= s < bins[i+1])
+        pct = count / len(score_list) * 100
+        print(f"  [{bins[i]:.1f}, {bins[i+1]:.1f}): {count:4d} ({pct:5.1f}%)")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Hierarchical UAV Task 1 Evaluation")
@@ -242,6 +351,12 @@ def main():
         type=str,
         default='./data/metadata/airspatial_agent_test_task1.jsonl',
         help='Path to Task 1 test data'
+    )
+    parser.add_argument(
+        '--image_dir',
+        type=str,
+        default='./data/images',
+        help='Directory containing images'
     )
     parser.add_argument(
         '--output',
@@ -283,6 +398,7 @@ def main():
             load_4bit=args.load_4bit
         )
         config.huav_address = f"0.0.0.0:{args.port}"
+        config.image_dir = args.image_dir
 
         run_huav_eval(config, test_data, args.output)
 
@@ -299,6 +415,7 @@ def main():
             load_8bit=args.load_8bit,
             load_4bit=args.load_4bit
         )
+        config.image_dir = args.image_dir
 
         run_luav_eval(config, test_data, args.output)
 

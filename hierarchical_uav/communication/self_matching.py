@@ -109,13 +109,20 @@ class SelfMatchingGate(nn.Module):
     If m_{i,i} ≤ τ: uncertain, query H-UAV
 
     Args:
+        query_dim: Dimension of query vector
+        key_dim: Dimension of key vector
         threshold: Self-matching threshold τ
     """
 
-    def __init__(self, threshold: float = 0.7):
+    def __init__(self, query_dim: int = 256, key_dim: int = 1024, threshold: float = 0.7):
         super().__init__()
 
         self.threshold = threshold
+        self.query_dim = query_dim
+        self.key_dim = key_dim
+
+        # Projection layer: project key to query dimension for similarity computation
+        self.key_projection = nn.Linear(key_dim, query_dim)
 
         # Learnable threshold adjustment (optional)
         self.register_buffer('adaptive_threshold', torch.tensor(threshold))
@@ -123,6 +130,12 @@ class SelfMatchingGate(nn.Module):
         # Statistics tracking
         self.register_buffer('total_queries', torch.tensor(0, dtype=torch.long))
         self.register_buffer('huav_queries', torch.tensor(0, dtype=torch.long))
+
+        # Score statistics for adaptive threshold
+        self.register_buffer('score_sum', torch.tensor(0.0))
+        self.register_buffer('score_squared_sum', torch.tensor(0.0))
+        self.register_buffer('min_score', torch.tensor(1.0))
+        self.register_buffer('max_score', torch.tensor(0.0))
 
     def forward(
         self,
@@ -133,36 +146,42 @@ class SelfMatchingGate(nn.Module):
         Compute self-matching scores and gating decisions.
 
         Args:
-            query: [batch_size, query_dim] query vectors
-            key: [batch_size, key_dim] key vectors
+            query: [batch_size, query_dim] query vectors (already normalized)
+            key: [batch_size, key_dim] key vectors (already normalized)
 
         Returns:
-            scores: [batch_size] self-matching scores
+            scores: [batch_size] self-matching scores (cosine similarity)
             should_query: [batch_size] boolean tensor, True if should query H-UAV
         """
-        # Compute self-matching score (cosine similarity between query and key projections)
-        # Note: query and key have different dimensions, so we use a learned projection
-        # For simplicity, we compute similarity in query space
+        # Project key to query dimension
+        key_projected = self.key_projection(key)  # [batch_size, query_dim]
+
+        # Normalize projected key
+        key_projected_norm = F.normalize(key_projected, dim=-1)
         query_norm = F.normalize(query, dim=-1)
 
-        # Project key to query dimension for comparison
-        # In practice, we use the magnitudes as a proxy for uncertainty
-        query_magnitude = torch.norm(query, dim=-1)
-        key_magnitude = torch.norm(key, dim=-1)
+        # Compute cosine similarity (self-matching score)
+        # m_{i,i} = μ_i^T κ_i (both are normalized, so this is cosine similarity)
+        scores = (query_norm * key_projected_norm).sum(dim=-1)  # [batch_size]
 
-        # Self-matching score: higher magnitude difference = lower confidence
-        magnitude_diff = torch.abs(query_magnitude - key_magnitude)
-        scores = 1.0 / (1.0 + magnitude_diff)  # Score in [0, 1]
-
-        # Alternative: Direct dot product similarity (requires projection)
-        # For now, use simple magnitude-based heuristic
+        # Ensure scores are in [0, 1] range (cosine can be negative)
+        scores = (scores + 1.0) / 2.0  # Map [-1, 1] to [0, 1]
 
         # Gating decision
+        # High score (close to 1) = high similarity = confident = proceed locally
+        # Low score (close to 0) = low similarity = uncertain = query H-UAV
         should_query = scores < self.adaptive_threshold
 
         # Update statistics
-        self.total_queries += query.shape[0]
+        batch_size = query.shape[0]
+        self.total_queries += batch_size
         self.huav_queries += should_query.sum().item()
+
+        # Update score statistics
+        self.score_sum += scores.sum().item()
+        self.score_squared_sum += (scores ** 2).sum().item()
+        self.min_score = torch.min(self.min_score, scores.min())
+        self.max_score = torch.max(self.max_score, scores.max())
 
         return scores, should_query
 
@@ -176,10 +195,72 @@ class SelfMatchingGate(nn.Module):
         """Reset query statistics."""
         self.total_queries.zero_()
         self.huav_queries.zero_()
+        self.score_sum.zero_()
+        self.score_squared_sum.zero_()
+        self.min_score.fill_(1.0)
+        self.max_score.zero_()
 
     def update_threshold(self, new_threshold: float):
         """Update the adaptive threshold."""
         self.adaptive_threshold.copy_(torch.tensor(new_threshold))
+
+    def get_score_statistics(self) -> Dict[str, float]:
+        """Get statistics about self-matching scores."""
+        if self.total_queries == 0:
+            return {
+                'mean': 0.0,
+                'std': 0.0,
+                'min': 0.0,
+                'max': 0.0
+            }
+
+        n = self.total_queries.item()
+        mean = self.score_sum.item() / n
+        variance = (self.score_squared_sum.item() / n) - (mean ** 2)
+        std = variance ** 0.5 if variance > 0 else 0.0
+
+        return {
+            'mean': mean,
+            'std': std,
+            'min': self.min_score.item(),
+            'max': self.max_score.item()
+        }
+
+    def auto_adjust_threshold(self, target_query_rate: float = 0.3) -> float:
+        """
+        Automatically adjust threshold to achieve target query rate.
+
+        Args:
+            target_query_rate: Desired proportion of queries to H-UAV (default: 0.3 = 30%)
+
+        Returns:
+            new_threshold: The adjusted threshold value
+        """
+        stats = self.get_score_statistics()
+        current_rate = self.get_query_rate()
+
+        # If current rate is too low (querying H-UAV too rarely), increase threshold
+        # If current rate is too high (querying H-UAV too often), decrease threshold
+        mean = stats['mean']
+        std = stats['std']
+
+        if std == 0:
+            # No variation, use mean as threshold
+            new_threshold = mean
+        else:
+            # Adjust based on target percentile
+            # For 30% query rate, we want threshold at 30th percentile
+            # Approximate using normal distribution: threshold ≈ mean - z*std
+            # where z ≈ 0.52 for 30th percentile
+            z_score = -0.52 if target_query_rate == 0.3 else (target_query_rate - 0.5) * 2.5
+            new_threshold = mean + z_score * std
+
+            # Clamp to [0, 1] and ensure it's within observed range
+            new_threshold = max(stats['min'], min(stats['max'], new_threshold))
+            new_threshold = max(0.0, min(1.0, new_threshold))
+
+        self.update_threshold(new_threshold)
+        return new_threshold
 
 
 # Combined module for convenience
@@ -209,7 +290,11 @@ class SelfMatchingModule(nn.Module):
             key_dim=key_dim
         )
 
-        self.gate = SelfMatchingGate(threshold=threshold)
+        self.gate = SelfMatchingGate(
+            query_dim=query_dim,
+            key_dim=key_dim,
+            threshold=threshold
+        )
 
     def forward(
         self,
@@ -238,11 +323,32 @@ class SelfMatchingModule(nn.Module):
 
     def get_statistics(self) -> Dict[str, float]:
         """Get communication statistics."""
-        return {
+        stats = {
             'query_rate': self.gate.get_query_rate(),
             'total_queries': self.gate.total_queries.item(),
             'huav_queries': self.gate.huav_queries.item()
         }
+        # Add score statistics
+        score_stats = self.gate.get_score_statistics()
+        stats.update({
+            'score_mean': score_stats['mean'],
+            'score_std': score_stats['std'],
+            'score_min': score_stats['min'],
+            'score_max': score_stats['max']
+        })
+        return stats
+
+    def auto_adjust_threshold(self, target_query_rate: float = 0.3) -> float:
+        """
+        Automatically adjust threshold to achieve target query rate.
+
+        Args:
+            target_query_rate: Desired proportion of queries to H-UAV
+
+        Returns:
+            new_threshold: The adjusted threshold value
+        """
+        return self.gate.auto_adjust_threshold(target_query_rate)
 
 
 if __name__ == "__main__":
