@@ -291,8 +291,9 @@ class LLaVAWithMAC(nn.Module):
         # Memory features serve as validation that H-UAV has processed this query
         # TODO: Implement actual memory injection by modifying LLaVA's forward pass
 
+        # Note: LLaVA's generate() expects 'inputs' parameter, not 'input_ids'
         outputs = self.llava_model.generate(
-            input_ids=input_ids,
+            inputs=input_ids,  # Changed from input_ids to inputs
             images=images,  # Pass raw images, not processed features
             **filtered_kwargs
         )

@@ -368,8 +368,9 @@ def run_luav_eval(
 
                 # Use standard LLaVA generation for all cases
                 # This avoids potential issues with the generate_with_memory wrapper
+                # Note: LLaVA's generate() expects 'inputs' not 'input_ids'
                 output_ids = luav_model.llava_model.generate(
-                    input_ids=input_ids,
+                    inputs=input_ids,  # Changed from input_ids= to inputs=
                     images=image_tensor,
                     max_new_tokens=512,
                     temperature=0.2,
