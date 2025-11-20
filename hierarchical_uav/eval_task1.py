@@ -255,6 +255,10 @@ def main():
     parser.add_argument('--num_persistent_tokens', type=int, default=64)
     parser.add_argument('--num_memory_tokens', type=int, default=128)
 
+    # Quantization options
+    parser.add_argument('--load_8bit', action='store_true', help='Use 8-bit quantization to reduce memory')
+    parser.add_argument('--load_4bit', action='store_true', help='Use 4-bit quantization (experimental)')
+
     args = parser.parse_args()
 
     # Set default output path
@@ -274,7 +278,9 @@ def main():
             device=args.device,
             memory_dim=args.memory_dim,
             num_persistent_tokens=args.num_persistent_tokens,
-            num_memory_tokens=args.num_memory_tokens
+            num_memory_tokens=args.num_memory_tokens,
+            load_8bit=args.load_8bit,
+            load_4bit=args.load_4bit
         )
         config.huav_address = f"0.0.0.0:{args.port}"
 
@@ -289,7 +295,9 @@ def main():
             memory_dim=args.memory_dim,
             num_persistent_tokens=args.num_persistent_tokens,
             num_memory_tokens=args.num_memory_tokens,
-            self_match_threshold=args.threshold
+            self_match_threshold=args.threshold,
+            load_8bit=args.load_8bit,
+            load_4bit=args.load_4bit
         )
 
         run_luav_eval(config, test_data, args.output)
