@@ -7,13 +7,14 @@ Implements:
 3. gRPC-based communication between L-UAV and H-UAV
 """
 
-from .self_matching import SelfMatchingGate, QueryKeyGenerator
+from .self_matching import SelfMatchingGate, QueryKeyGenerator, SelfMatchingModule
 from .grpc_server import HUAVServer
 from .grpc_client import LUAVClient
 
 __all__ = [
     'SelfMatchingGate',
     'QueryKeyGenerator',
+    'SelfMatchingModule',
     'HUAVServer',
     'LUAVClient'
 ]
