@@ -238,42 +238,89 @@ def run_luav_eval(
             # Parse 3D bounding box from sample
             bbox_3d = parse_bbox_3d(sample).unsqueeze(0).to(config.device)  # [1, 7]
 
-            # Extract real image features
-            # Get image path from sample
+            # Get image path and question
             image_id = sample.get('image_id', sample.get('image', ''))
+            question = sample.get('question', sample.get('conversations', [{}])[0].get('value', ''))
             image_path = os.path.join(config.image_dir, image_id) if hasattr(config, 'image_dir') else None
 
+            # Load and process image
             if image_path and os.path.exists(image_path):
-                # Extract real features from image
+                image = Image.open(image_path).convert('RGB')
+                image_tensor = luav_model.image_processor.preprocess(image, return_tensors='pt')['pixel_values']
+                image_tensor = image_tensor.to(config.device)
+
+                # Extract features for self-matching
                 image_features = extract_image_features(luav_model, image_path, bbox_3d)
                 image_features = image_features.unsqueeze(0)  # [1, hidden_size]
             else:
-                # Fallback: Use random features with warning (only once per image)
+                # Skip if image not found
                 if i == 0 or (i % 100 == 0):
-                    print(f"\nWarning: Image not found at {image_path}, using random features")
-                image_features = torch.randn(1, luav_model.llava_model.config.hidden_size).to(config.device)
+                    print(f"\nWarning: Image not found at {image_path}, skipping")
+                continue
 
             # Generate query and compute self-matching
             with torch.no_grad():
                 query, score, should_query = sm_module(image_features, bbox_3d)
 
+            # Prepare question prompt
+            from llava.conversation import conv_templates
+            conv = conv_templates["vicuna_v1"].copy()
+            conv.append_message(conv.roles[0], question)
+            conv.append_message(conv.roles[1], None)
+            prompt = conv.get_prompt()
+
+            # Tokenize
+            input_ids = luav_model.tokenizer(prompt, return_tensors='pt')['input_ids'].to(config.device)
+
             # Decision: query H-UAV or proceed locally
+            memory_value = None
             if should_query[0].item():
-                # Query H-UAV
+                # Query H-UAV for memory augmentation
                 value, cache_hit = client.query_huav(query[0])
+                memory_value = value.unsqueeze(0).to(config.device)  # [1, memory_dim]
                 source = "huav"
                 remote_count += 1
             else:
-                # Proceed locally
-                value = query[0]  # Use query as value (simplified)
+                # Proceed locally without H-UAV memory
                 cache_hit = False
                 source = "local"
                 local_count += 1
 
+            # Generate answer with optional memory augmentation
+            with torch.no_grad():
+                if memory_value is not None:
+                    # Use H-UAV memory to enhance generation
+                    output_ids = luav_model.generate_with_memory(
+                        input_ids=input_ids,
+                        images=image_tensor,
+                        memory_features=memory_value,
+                        max_new_tokens=512,
+                        temperature=0.2,
+                        do_sample=True
+                    )
+                else:
+                    # Standard generation without memory
+                    output_ids = luav_model.llava_model.generate(
+                        input_ids=input_ids,
+                        images=image_tensor,
+                        max_new_tokens=512,
+                        temperature=0.2,
+                        do_sample=True
+                    )
+
+            # Decode answer
+            answer = luav_model.tokenizer.decode(
+                output_ids[0, input_ids.shape[1]:],
+                skip_special_tokens=True
+            ).strip()
+
             # Record result
             results.append({
                 'question_id': sample.get('question_id', i),
-                'image_id': sample.get('image_id', ''),
+                'image_id': image_id,
+                'question': question,
+                'answer': answer,
+                'ground_truth': sample.get('answer', ''),
                 'self_match_score': score[0].item(),
                 'source': source,
                 'cache_hit': cache_hit
@@ -301,6 +348,13 @@ def run_luav_eval(
     print(f"Local decisions: {local_count} ({local_count/len(results)*100:.1f}%)")
     print(f"Remote queries: {remote_count} ({remote_count/len(results)*100:.1f}%)")
 
+    # Cache statistics
+    cache_hits = sum(1 for r in results if r.get('cache_hit', False))
+    cache_hit_rate = cache_hits / remote_count if remote_count > 0 else 0.0
+    print(f"\nCache statistics:")
+    print(f"  Total cache hits: {cache_hits}")
+    print(f"  Cache hit rate: {cache_hit_rate:.2%}")
+
     sm_stats = sm_module.get_statistics()
     print(f"\nSelf-matching statistics:")
     print(f"  Query rate: {sm_stats['query_rate']:.2%}")
@@ -321,6 +375,18 @@ def run_luav_eval(
         count = sum(1 for s in score_list if bins[i] <= s < bins[i+1])
         pct = count / len(score_list) * 100
         print(f"  [{bins[i]:.1f}, {bins[i+1]:.1f}): {count:4d} ({pct:5.1f}%)")
+
+    # Show sample results
+    print(f"\n" + "=" * 60)
+    print("Sample Results (first 3)")
+    print("=" * 60)
+    for i, result in enumerate(results[:3]):
+        print(f"\n[Sample {i+1}]")
+        print(f"  Image: {result['image_id']}")
+        print(f"  Question: {result['question'][:60]}...")
+        print(f"  Answer: {result['answer'][:80]}...")
+        print(f"  Source: {result['source']} (cache_hit={result['cache_hit']})")
+        print(f"  Score: {result['self_match_score']:.4f}")
 
 
 def main():

@@ -231,6 +231,80 @@ class LLaVAWithMAC(nn.Module):
 
         return outputs
 
+    @torch.no_grad()
+    def generate_with_memory(
+        self,
+        input_ids: torch.Tensor,
+        images: torch.Tensor,
+        memory_features: Optional[torch.Tensor] = None,
+        memory_weight: float = 0.5,
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Generate text with optional memory augmentation from H-UAV.
+
+        Args:
+            input_ids: [batch_size, seq_len] token IDs
+            images: [batch_size, 3, H, W] images
+            memory_features: Optional [batch_size, hidden_size] memory from H-UAV
+            memory_weight: Weight for memory fusion (0.0-1.0)
+            **kwargs: Generation arguments
+
+        Returns:
+            generated_ids: [batch_size, generated_len] token IDs
+        """
+        # Extract vision features
+        vision_features = self.llava_model.get_model().get_vision_tower()(images)
+        vision_features = self.llava_model.get_model().mm_projector(vision_features)
+        # vision_features: [batch_size, num_patches, hidden_size]
+
+        # If memory features provided, inject them
+        if memory_features is not None:
+            # Expand memory to match vision features shape
+            batch_size, num_patches, hidden_size = vision_features.shape
+
+            # Memory features are [batch_size, hidden_size] or [batch_size, memory_dim]
+            # Need to expand to [batch_size, 1, hidden_size] for concatenation
+            if memory_features.shape[-1] != hidden_size:
+                # If dimensions don't match, project memory features
+                if not hasattr(self, 'memory_projector'):
+                    self.memory_projector = nn.Linear(
+                        memory_features.shape[-1],
+                        hidden_size
+                    ).to(memory_features.device)
+                memory_features = self.memory_projector(memory_features)
+
+            # Reshape memory to [batch_size, 1, hidden_size]
+            memory_token = memory_features.unsqueeze(1) if len(memory_features.shape) == 2 else memory_features
+
+            # Method 1: Prepend memory token (most straightforward)
+            enhanced_features = torch.cat([memory_token, vision_features], dim=1)
+            # enhanced_features: [batch_size, num_patches+1, hidden_size]
+
+            # Method 2: Alternatively, fusion with vision features
+            # avg_vision = vision_features.mean(dim=1, keepdim=True)  # [batch, 1, hidden]
+            # fused = memory_weight * memory_token + (1 - memory_weight) * avg_vision
+            # enhanced_features = torch.cat([fused, vision_features], dim=1)
+
+        else:
+            enhanced_features = vision_features
+
+        # Process through MAC if available
+        if hasattr(self, 'mac_layer'):
+            enhanced_features, _ = self.mac_layer(
+                enhanced_features,
+                update_memory=False
+            )
+
+        # Generate using enhanced features
+        outputs = self.llava_model.generate(
+            input_ids=input_ids,
+            images=enhanced_features,
+            **kwargs
+        )
+
+        return outputs
+
     def update_memory_with_feedback(
         self,
         query_features: torch.Tensor,
