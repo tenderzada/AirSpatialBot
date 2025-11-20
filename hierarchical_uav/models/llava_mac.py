@@ -45,6 +45,15 @@ class LLaVAWithMAC(nn.Module):
         print(f"Loading base LLaVA model from {config.model_path}...")
         model_name = get_model_name_from_path(config.model_path)
 
+        # Set device_map based on device to avoid multi-GPU distribution
+        # Extract device number from config.device (e.g., 'cuda:1' -> '1')
+        if 'cuda' in str(config.device):
+            device_id = str(config.device).split(':')[-1] if ':' in str(config.device) else '0'
+            # For 8-bit models, use device map that keeps everything on the same GPU
+            device_map_str = {"": int(device_id)}
+        else:
+            device_map_str = "auto"
+
         self.tokenizer, self.llava_model, self.image_processor, self.context_len = (
             load_pretrained_model(
                 model_path=config.model_path,
@@ -52,7 +61,7 @@ class LLaVAWithMAC(nn.Module):
                 model_name=model_name,
                 load_8bit=config.load_8bit,
                 load_4bit=config.load_4bit,
-                device_map="auto"
+                device_map=device_map_str
             )
         )
 
