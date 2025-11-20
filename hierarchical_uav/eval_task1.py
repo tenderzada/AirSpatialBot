@@ -245,7 +245,20 @@ def run_luav_eval(
 
             # Get image path and question
             image_id = sample.get('image_id', sample.get('image', ''))
-            question = sample.get('question', sample.get('conversations', [{}])[0].get('value', ''))
+
+            # Extract question safely from various formats
+            if 'question' in sample:
+                question = sample['question']
+            elif 'conversations' in sample and len(sample['conversations']) > 0:
+                # Extract from conversations format
+                first_message = sample['conversations'][0]
+                question = first_message.get('value', '') if isinstance(first_message, dict) else str(first_message)
+            else:
+                question = ""
+
+            # Ensure question is a string
+            if not isinstance(question, str):
+                question = str(question) if question else ""
             image_path = os.path.join(config.image_dir, image_id) if hasattr(config, 'image_dir') else None
 
             # Load and process image
@@ -273,6 +286,12 @@ def run_luav_eval(
 
             # Prepare question prompt
             from llava.conversation import conv_templates
+
+            # Validate question
+            if not question or question.strip() == "":
+                logger.warning(f"Sample {i}: Empty question, skipping")
+                continue
+
             conv = conv_templates["vicuna_v1"].copy()
             conv.append_message(conv.roles[0], question)
             conv.append_message(conv.roles[1], None)
@@ -281,10 +300,19 @@ def run_luav_eval(
             # Tokenize
             input_ids = luav_model.tokenizer(prompt, return_tensors='pt')['input_ids'].to(config.device)
 
-            # Validate input_ids
-            if input_ids is None or input_ids.shape[0] == 0:
-                logger.error(f"Sample {i}: Invalid input_ids, skipping")
+            # Validate input_ids thoroughly
+            if input_ids is None:
+                logger.error(f"Sample {i}: input_ids is None after tokenization, skipping")
                 continue
+            if input_ids.shape[0] == 0 or input_ids.shape[1] <= 1:
+                logger.error(f"Sample {i}: input_ids has invalid shape {input_ids.shape}, skipping")
+                logger.error(f"  Question: {question[:100]}")
+                logger.error(f"  Prompt length: {len(prompt)}")
+                continue
+
+            # Log details for debugging (every 10 samples)
+            if i % 10 == 0:
+                logger.info(f"Sample {i}: input_ids.shape={input_ids.shape}, question_len={len(question)}")
 
             # Decision: query H-UAV or proceed locally
             memory_value = None
