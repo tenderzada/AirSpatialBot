@@ -109,13 +109,15 @@ class HUAVServer:
             data = b''
             while True:
                 chunk = client_socket.recv(4096)
-                if not chunk:
-                    break
                 data += chunk
 
                 # Check for end marker
                 if b'<END>' in data:
                     data = data.replace(b'<END>', b'')
+                    break
+
+                # Only break on empty chunk if we haven't received anything
+                if not chunk and len(data) == 0:
                     break
 
             if not data:
@@ -129,6 +131,7 @@ class HUAVServer:
             logger.debug(f"Received query with shape {query_vector.shape}")
 
             # Retrieve from memory
+            cache_hit = False  # Initialize cache_hit
             with torch.no_grad():
                 if hasattr(self.huav_model, 'mac_layer'):
                     value_vector, cache_hit = self.huav_model.mac_layer.neural_memory.retrieve_with_cache(
@@ -147,7 +150,7 @@ class HUAVServer:
             # Prepare response
             response = {
                 'value': value_vector.cpu().numpy(),
-                'cache_hit': cache_hit if hasattr(self.huav_model, 'mac_layer') else False,
+                'cache_hit': cache_hit,
                 'request_id': request.get('request_id', 0)
             }
 
@@ -157,8 +160,16 @@ class HUAVServer:
 
             logger.debug(f"Sent response (cache_hit={response['cache_hit']})")
 
+        except pickle.UnpicklingError as e:
+            logger.error(f"Error deserializing client request: {e}")
+            logger.error(f"  Received data length: {len(data)} bytes")
+            logger.error(f"  Data preview: {data[:100] if len(data) > 0 else 'empty'}")
+
         except Exception as e:
             logger.error(f"Error handling client: {e}")
+            logger.error(f"  Exception type: {type(e).__name__}")
+            import traceback
+            logger.error(f"  Traceback: {traceback.format_exc()}")
 
         finally:
             client_socket.close()

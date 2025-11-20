@@ -85,15 +85,21 @@ class LUAVClient:
             data = b''
             while True:
                 chunk = client_socket.recv(4096)
-                if not chunk:
-                    break
                 data += chunk
 
+                # Check for end marker
                 if b'<END>' in data:
                     data = data.replace(b'<END>', b'')
                     break
 
+                # Only break on empty chunk if we haven't received anything
+                if not chunk and len(data) == 0:
+                    break
+
             # Deserialize response
+            if not data:
+                raise RuntimeError("Received empty response from H-UAV")
+
             response = pickle.loads(data)
             value_vector = torch.tensor(response['value'])
             cache_hit = response['cache_hit']
@@ -108,8 +114,15 @@ class LUAVClient:
             logger.error(f"Query #{self.request_counter} timed out")
             raise TimeoutError(f"H-UAV query timed out after {self.timeout}s")
 
+        except pickle.UnpicklingError as e:
+            logger.error(f"Query #{self.request_counter} failed: Pickle deserialization error - {e}")
+            logger.error(f"  Received data length: {len(data)} bytes")
+            logger.error(f"  Data preview: {data[:100] if len(data) > 0 else 'empty'}")
+            raise RuntimeError(f"Failed to deserialize H-UAV response: {e}")
+
         except Exception as e:
             logger.error(f"Query #{self.request_counter} failed: {e}")
+            logger.error(f"  Exception type: {type(e).__name__}")
             raise RuntimeError(f"Failed to query H-UAV: {e}")
 
     def batch_query_huav(
