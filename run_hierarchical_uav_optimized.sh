@@ -6,6 +6,7 @@
 MODEL_PATH="./models/AirSpatialBot"
 VISION_TOWER="./models/clip-vit-large-patch14-336"
 TEST_DATA="./data/metadata/airspatial_agent_test_task1.jsonl"
+IMAGE_DIR="/mnt/data/AirSpatial/images"  # 图片目录
 OUTPUT_DIR="./outputs/hierarchical_uav"
 PORT=50051
 
@@ -55,6 +56,7 @@ start_huav() {
         --device cuda:0 \
         --port $PORT \
         --test_data $TEST_DATA \
+        --image_dir $IMAGE_DIR \
         --output $OUTPUT_DIR/huav_results.jsonl \
         --memory_dim $MEMORY_DIM \
         --num_persistent_tokens $NUM_PERSISTENT_TOKENS \
@@ -99,6 +101,7 @@ start_luav() {
         --huav_address localhost:$PORT \
         --threshold 0.7 \
         --test_data $TEST_DATA \
+        --image_dir $IMAGE_DIR \
         --output $OUTPUT_DIR/luav_results.jsonl \
         --memory_dim $MEMORY_DIM \
         --num_persistent_tokens $NUM_PERSISTENT_TOKENS \
