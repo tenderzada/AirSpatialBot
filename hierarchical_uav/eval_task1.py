@@ -388,6 +388,26 @@ def run_luav_eval(
             print(f"\nError processing sample {i}: {e}")
             print(f"Traceback: {traceback.format_exc()}")
             logger.error(f"Full error details for sample {i}:", exc_info=True)
+
+            # Save problematic sample for debugging
+            try:
+                output_dir = os.path.dirname(output_path) or "."
+                error_file = os.path.join(output_dir, f"error_sample_{i}.json")
+                with open(error_file, 'w') as f:
+                    json.dump({
+                        'sample_index': i,
+                        'sample_data': sample,
+                        'error': str(e),
+                        'traceback': traceback.format_exc(),
+                        'question': question if 'question' in locals() else None,
+                        'image_id': image_id if 'image_id' in locals() else None,
+                        'input_ids_shape': list(input_ids.shape) if 'input_ids' in locals() and input_ids is not None else None,
+                        'image_tensor_shape': list(image_tensor.shape) if 'image_tensor' in locals() and image_tensor is not None else None
+                    }, f, indent=2)
+                logger.error(f"Saved error details to {error_file}")
+            except Exception as save_error:
+                logger.error(f"Failed to save error sample: {save_error}")
+
             continue
 
     # Save results
