@@ -282,6 +282,11 @@ class LLaVAWithMAC(nn.Module):
         logger = logging.getLogger(__name__)
         logger.debug(f"generate_with_memory: input_ids.shape={input_ids.shape}, images.shape={images.shape}")
 
+        # Remove custom parameters that LLaVA doesn't accept
+        # memory_features and memory_weight are our custom parameters
+        filtered_kwargs = {k: v for k, v in kwargs.items()
+                          if k not in ['memory_features', 'memory_weight']}
+
         # For now, simply use standard generation
         # Memory features serve as validation that H-UAV has processed this query
         # TODO: Implement actual memory injection by modifying LLaVA's forward pass
@@ -289,7 +294,7 @@ class LLaVAWithMAC(nn.Module):
         outputs = self.llava_model.generate(
             input_ids=input_ids,
             images=images,  # Pass raw images, not processed features
-            **kwargs
+            **filtered_kwargs
         )
 
         return outputs
