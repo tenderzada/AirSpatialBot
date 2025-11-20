@@ -286,14 +286,25 @@ def run_luav_eval(
 
             # Prepare question prompt
             from llava.conversation import conv_templates
+            from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN
 
             # Validate question
             if not question or question.strip() == "":
                 logger.warning(f"Sample {i}: Empty question, skipping")
                 continue
 
+            # Prepare question for LLaVA
+            # LLaVA expects <image> token in the prompt
+            # Remove bbox tags if present (they're not standard LLaVA tokens)
+            import re
+            question_clean = re.sub(r'<bbox>.*?</bbox>', '', question)
+            question_clean = question_clean.strip()
+
+            # Add image token for LLaVA (required for multimodal input)
+            question_with_image = f"{DEFAULT_IMAGE_TOKEN}\n{question_clean}"
+
             conv = conv_templates["vicuna_v1"].copy()
-            conv.append_message(conv.roles[0], question)
+            conv.append_message(conv.roles[0], question_with_image)
             conv.append_message(conv.roles[1], None)
             prompt = conv.get_prompt()
 
