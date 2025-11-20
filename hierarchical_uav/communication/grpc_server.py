@@ -9,6 +9,7 @@ import torch
 import socket
 import pickle
 import threading
+import numpy as np
 from typing import Optional, Callable, Dict
 import logging
 
@@ -104,6 +105,9 @@ class HUAVServer:
 
     def _handle_client(self, client_socket: socket.socket):
         """Handle a single L-UAV request."""
+        response_sent = False
+        request = None
+
         try:
             # Receive query data
             data = b''
@@ -151,19 +155,25 @@ class HUAVServer:
             response = {
                 'value': value_vector.cpu().numpy(),
                 'cache_hit': cache_hit,
-                'request_id': request.get('request_id', 0)
+                'request_id': request.get('request_id', 0),
+                'success': True
             }
 
             # Serialize and send
             response_data = pickle.dumps(response)
             client_socket.sendall(response_data + b'<END>')
+            response_sent = True
 
             logger.debug(f"Sent response (cache_hit={response['cache_hit']})")
 
         except pickle.UnpicklingError as e:
             logger.error(f"Error deserializing client request: {e}")
-            logger.error(f"  Received data length: {len(data)} bytes")
-            logger.error(f"  Data preview: {data[:100] if len(data) > 0 else 'empty'}")
+            logger.error(f"  Received data length: {len(data) if 'data' in locals() else 0} bytes")
+            logger.error(f"  Data preview: {data[:100] if 'data' in locals() and len(data) > 0 else 'empty'}")
+
+            # Send error response
+            self._send_error_response(client_socket, str(e), request)
+            response_sent = True
 
         except Exception as e:
             logger.error(f"Error handling client: {e}")
@@ -171,8 +181,32 @@ class HUAVServer:
             import traceback
             logger.error(f"  Traceback: {traceback.format_exc()}")
 
+            # Send error response
+            if not response_sent:
+                self._send_error_response(client_socket, str(e), request)
+                response_sent = True
+
         finally:
             client_socket.close()
+
+    def _send_error_response(self, client_socket: socket.socket, error_msg: str, request: Optional[Dict] = None):
+        """Send an error response to the client."""
+        try:
+            # Create error response with dummy value
+            error_response = {
+                'value': np.zeros(256),  # Default query dimension
+                'cache_hit': False,
+                'request_id': request.get('request_id', 0) if request else 0,
+                'success': False,
+                'error': error_msg
+            }
+
+            response_data = pickle.dumps(error_response)
+            client_socket.sendall(response_data + b'<END>')
+            logger.debug(f"Sent error response: {error_msg}")
+
+        except Exception as e:
+            logger.error(f"Failed to send error response: {e}")
 
     def get_statistics(self) -> Dict:
         """Get server statistics."""
@@ -199,7 +233,7 @@ if __name__ == "__main__":
             class NeuralMemory:
                 def retrieve_with_cache(self, query):
                     # Mock retrieval
-                    return query, False
+                    return query * 2.0, False
 
             neural_memory = NeuralMemory()
 

@@ -101,6 +101,12 @@ class LUAVClient:
                 raise RuntimeError("Received empty response from H-UAV")
 
             response = pickle.loads(data)
+
+            # Check if response indicates success
+            if not response.get('success', True):
+                error_msg = response.get('error', 'Unknown error')
+                raise RuntimeError(f"H-UAV returned error: {error_msg}")
+
             value_vector = torch.tensor(response['value'])
             cache_hit = response['cache_hit']
 
