@@ -252,6 +252,10 @@ def run_luav_eval(
                 # Extract features for self-matching
                 image_features = extract_image_features(luav_model, image_path, bbox_3d)
                 image_features = image_features.unsqueeze(0)  # [1, hidden_size]
+
+                # Ensure dtype consistency (float32)
+                image_features = image_features.float()
+                bbox_3d = bbox_3d.float()
             else:
                 # Skip if image not found
                 if i == 0 or (i % 100 == 0):
@@ -277,9 +281,15 @@ def run_luav_eval(
             if should_query[0].item():
                 # Query H-UAV for memory augmentation
                 value, cache_hit = client.query_huav(query[0])
-                memory_value = value.unsqueeze(0).to(config.device)  # [1, memory_dim]
-                source = "huav"
-                remote_count += 1
+                if value is not None:
+                    memory_value = value.unsqueeze(0).to(config.device)  # [1, memory_dim]
+                    source = "huav"
+                    remote_count += 1
+                else:
+                    # H-UAV query failed, fallback to local
+                    cache_hit = False
+                    source = "local_fallback"
+                    local_count += 1
             else:
                 # Proceed locally without H-UAV memory
                 cache_hit = False

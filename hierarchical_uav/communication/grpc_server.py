@@ -143,7 +143,7 @@ class HUAVServer:
 
             # Deserialize query
             request = pickle.loads(data)
-            query_vector = torch.tensor(request['query']).to(self.huav_model.config.device)
+            query_vector = torch.tensor(request['query'], dtype=torch.float32).to(self.huav_model.config.device)
 
             logger.debug(f"Received query with shape {query_vector.shape}")
 
@@ -151,6 +151,10 @@ class HUAVServer:
             cache_hit = False  # Initialize cache_hit
             with torch.no_grad():
                 if hasattr(self.huav_model, 'mac_layer') and self.query_projection is not None:
+                    # Ensure query_projection is on the same device as query_vector
+                    if self.query_projection.weight.device != query_vector.device:
+                        self.query_projection = self.query_projection.to(query_vector.device)
+
                     # Project compact query to memory dimension
                     expanded_query = self.query_projection(query_vector)
                     logger.debug(f"Expanded query from {query_vector.shape} to {expanded_query.shape}")
