@@ -1,0 +1,38 @@
+# AirSpatialBot Hierarchical UAV System Requirements
+
+# Core dependencies
+torch==2.1.2
+torchvision==0.16.2
+transformers==4.37.2
+tokenizers==0.15.1
+accelerate==0.21.0
+
+# LLaVA dependencies
+sentencepiece==0.1.99
+peft
+bitsandbytes
+
+# Vision and processing
+pillow
+opencv-python
+scikit-image
+einops==0.6.1
+timm==0.6.13
+
+# Data and utilities
+numpy
+scipy
+tqdm
+shortuuid
+
+# HuggingFace
+huggingface_hub
+
+# Communication (optional for debugging)
+# grpcio
+# grpcio-tools
+
+# Development (optional)
+# jupyter
+# matplotlib
+# seaborn
