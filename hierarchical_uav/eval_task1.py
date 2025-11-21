@@ -446,6 +446,7 @@ def run_luav_eval(
                             'question': question,
                             'answer': kb_answer,
                             'ground_truth': sample.get('gt', sample.get('answer', '')),
+                            'qtype': qtype,
                             'self_match_score': 0.0,
                             'source': 'knowledge_base',
                             'cache_hit': False
