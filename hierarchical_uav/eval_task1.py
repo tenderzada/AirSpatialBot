@@ -306,6 +306,13 @@ def run_luav_eval(
             question_clean = re.sub(r'<bbox>.*?</bbox>', '', question)
             question_clean = question_clean.strip()
 
+            # Check if question becomes empty after removing bbox tags
+            if not question_clean:
+                logger.warning(f"Sample {i}: Question became empty after removing bbox tags")
+                logger.warning(f"  Original question: {question[:200]}")
+                # Use the original question without bbox removal
+                question_clean = question.strip()
+
             # Add image token for LLaVA (required for multimodal input)
             question_with_image = f"{DEFAULT_IMAGE_TOKEN}\n{question_clean}"
 
@@ -381,15 +388,30 @@ def run_luav_eval(
                         inputs=input_ids,  # Changed from input_ids= to inputs=
                         images=image_tensor,
                         max_new_tokens=512,
+                        min_new_tokens=1,  # Force at least 1 token generation
                         do_sample=False,  # Use greedy decoding for stability with 8-bit
                         num_beams=1
                     )
+
+            # Debug: check generation length
+            new_tokens = output_ids.shape[1] - input_ids.shape[1]
+            if new_tokens <= 0:
+                logger.warning(f"Sample {i}: No new tokens generated (output={output_ids.shape[1]}, input={input_ids.shape[1]})")
 
             # Decode answer
             answer = luav_model.tokenizer.decode(
                 output_ids[0, input_ids.shape[1]:],
                 skip_special_tokens=True
             ).strip()
+
+            # Debug: log empty answers
+            if not answer:
+                logger.warning(f"Sample {i}: Empty answer after decoding")
+                logger.warning(f"  Question: {question_clean[:100]}")
+                logger.warning(f"  New tokens: {new_tokens}")
+                # Decode raw output for debugging
+                raw_output = luav_model.tokenizer.decode(output_ids[0], skip_special_tokens=False)
+                logger.warning(f"  Raw output (last 200 chars): ...{raw_output[-200:]}")
 
             # Record result
             results.append({
