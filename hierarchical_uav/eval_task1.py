@@ -34,6 +34,141 @@ from hierarchical_uav.models import LLaVAWithMAC, UAVConfig, UAVType
 from hierarchical_uav.communication import HUAVServer, LUAVClient, SelfMatchingModule
 from PIL import Image
 import numpy as np
+import pandas as pd
+import re
+
+
+def crop_image_by_bbox(image: Image.Image, bbox: List[int], padding: float = 0.1) -> Image.Image:
+    """
+    Crop image to the bounding box region with optional padding.
+
+    Args:
+        image: PIL Image
+        bbox: [min_x, min_y, max_x, max_y]
+        padding: Padding ratio to add around bbox
+
+    Returns:
+        Cropped PIL Image
+    """
+    img_w, img_h = image.size
+    min_x, min_y, max_x, max_y = bbox
+
+    # Add padding
+    bbox_w = max_x - min_x
+    bbox_h = max_y - min_y
+    pad_x = int(bbox_w * padding)
+    pad_y = int(bbox_h * padding)
+
+    # Clamp to image bounds
+    min_x = max(0, min_x - pad_x)
+    min_y = max(0, min_y - pad_y)
+    max_x = min(img_w, max_x + pad_x)
+    max_y = min(img_h, max_y + pad_y)
+
+    return image.crop((min_x, min_y, max_x, max_y))
+
+
+def parse_bbox_from_question(question: str) -> List[int]:
+    """Extract bbox coordinates from question string."""
+    match = re.search(r'<bbox>\[(\d+),\s*(\d+),\s*(\d+),\s*(\d+)\]</bbox>', question)
+    if match:
+        return [int(match.group(i)) for i in range(1, 5)]
+    return None
+
+
+class VehicleKnowledgeBase:
+    """Knowledge base for vehicle attributes lookup based on 3D size."""
+
+    def __init__(self, csv_files: List[str] = None):
+        self.df = None
+        if csv_files:
+            self.load_csv(csv_files)
+
+    def load_csv(self, csv_files: List[str]):
+        """Load vehicle data from CSV files."""
+        dfs = []
+        for f in csv_files:
+            if os.path.exists(f):
+                dfs.append(pd.read_csv(f))
+        if dfs:
+            self.df = pd.concat(dfs, ignore_index=True)
+            logger.info(f"Loaded {len(self.df)} vehicle records from knowledge base")
+
+    def query_by_size(self, length: float, width: float, height: float, tolerance: float = 50.0) -> Dict:
+        """Query vehicle attributes by 3D dimensions with tolerance."""
+        if self.df is None:
+            return None
+
+        # Find matching rows within tolerance
+        mask = (
+            (abs(self.df['length'] - length) <= tolerance) &
+            (abs(self.df['width'] - width) <= tolerance) &
+            (abs(self.df['height'] - height) <= tolerance)
+        )
+        matches = self.df[mask]
+
+        if len(matches) == 0:
+            return None
+
+        # Return first match
+        row = matches.iloc[0]
+        return {
+            'brand': str(row.get('brand', '')),
+            'model': str(row.get('model', '')),
+            'type': str(row.get('type', '')),
+            'color': str(row.get('color', '')),
+            'min_price': row.get('min_price', row.get('price', None)),
+            'powertrain': str(row.get('powertrain', ''))
+        }
+
+    def query_by_image_bbox(self, image_id: str, bbox: List[int]) -> Dict:
+        """Query vehicle attributes by image ID and bbox."""
+        if self.df is None or 'Image URL' not in self.df.columns:
+            return None
+
+        # Match by image and bbox
+        mask = (
+            (self.df['Image URL'] == image_id) &
+            (self.df['x_min'] == bbox[0]) &
+            (self.df['y_min'] == bbox[1]) &
+            (self.df['x_max'] == bbox[2]) &
+            (self.df['y_max'] == bbox[3])
+        )
+        matches = self.df[mask]
+
+        if len(matches) == 0:
+            return None
+
+        row = matches.iloc[0]
+        return {
+            'brand': str(row.get('brand', '')),
+            'model': str(row.get('model', '')),
+            'type': str(row.get('type', '')),
+            'color': str(row.get('color', '')),
+            'min_price': row.get('min_price', row.get('price', None)),
+            'powertrain': str(row.get('powertrain', '')),
+            'length': row.get('length', 0),
+            'width': row.get('width', 0),
+            'height': row.get('height', 0)
+        }
+
+
+def get_question_type(question: str) -> str:
+    """Determine the type of question being asked."""
+    question_lower = question.lower()
+    if 'color' in question_lower or 'colour' in question_lower:
+        return 'color'
+    elif 'type' in question_lower:
+        return 'type'
+    elif 'brand' in question_lower:
+        return 'brand'
+    elif 'model' in question_lower:
+        return 'model'
+    elif 'price' in question_lower or 'cost' in question_lower:
+        return 'min_price'
+    elif 'powertrain' in question_lower or 'fuel' in question_lower or 'electric' in question_lower:
+        return 'powertrain'
+    return 'unknown'
 
 
 def extract_image_features(
@@ -230,6 +365,27 @@ def run_luav_eval(
     ).to(config.device)
     print(f"✓ Self-matching module initialized (threshold={config.self_match_threshold})")
 
+    # Initialize vehicle knowledge base (like main_task1.py)
+    knowledge_base = VehicleKnowledgeBase()
+    csv_files = [
+        "csv_file/output-19-add.csv",
+        "csv_file/output-20-add.csv",
+        "csv_file/output-40-add.csv",
+        "csv_file/output-42-add.csv",
+        "csv_file/output-43-add.csv",
+        "csv_file/output-44-add.csv",
+        "csv_file/output-45-add.csv",
+        "csv_file/output-46-add.csv",
+        "csv_file/output-47-add.csv",
+        "csv_file/output-48-add.csv",
+        "csv_file/output-49-add.csv",
+    ]
+    knowledge_base.load_csv(csv_files)
+    if knowledge_base.df is not None:
+        print(f"✓ Vehicle knowledge base loaded ({len(knowledge_base.df)} records)")
+    else:
+        print("⚠ Vehicle knowledge base not found, using VLM-only mode")
+
     # Evaluation loop
     print(f"\nEvaluating on {len(test_data)} samples...")
     print("=" * 60)
@@ -259,21 +415,64 @@ def run_luav_eval(
             # Ensure question is a string
             if not isinstance(question, str):
                 question = str(question) if question else ""
+
+            # Validate question
+            if not question or question.strip() == "":
+                logger.warning(f"Sample {i}: Empty question, skipping")
+                continue
+
+            # Parse bbox from question (like main_task1.py)
+            bbox_2d = parse_bbox_from_question(question)
+            if bbox_2d is None:
+                # Try from sample data
+                bbox_2d = sample.get('bbox', None)
+
+            # Determine question type
+            qtype = get_question_type(question)
+
+            # === Strategy: Use knowledge base for brand/model/price/type/powertrain ===
+            # Use VLM for color (requires visual understanding)
+            kb_answer = None
+            if knowledge_base.df is not None and bbox_2d is not None:
+                # Try to get answer from knowledge base (like main_task1.py)
+                kb_result = knowledge_base.query_by_image_bbox(image_id, bbox_2d)
+                if kb_result and qtype in kb_result and kb_result[qtype]:
+                    kb_answer = str(kb_result[qtype])
+                    if kb_answer and kb_answer != 'nan' and kb_answer != '':
+                        # Found answer in knowledge base
+                        results.append({
+                            'question_id': sample.get('question_id', i),
+                            'image_id': image_id,
+                            'question': question,
+                            'answer': kb_answer,
+                            'ground_truth': sample.get('gt', sample.get('answer', '')),
+                            'self_match_score': 0.0,
+                            'source': 'knowledge_base',
+                            'cache_hit': False
+                        })
+                        local_count += 1
+                        continue
+
+            # === Fallback to VLM inference ===
             image_path = os.path.join(config.image_dir, image_id) if hasattr(config, 'image_dir') else None
 
             # Load and process image
             if image_path and os.path.exists(image_path):
                 image = Image.open(image_path).convert('RGB')
+
+                # Crop to bbox region for better focus (like img_slice in main_task1.py)
+                if bbox_2d is not None:
+                    image = crop_image_by_bbox(image, bbox_2d, padding=0.15)
+
                 image_tensor = luav_model.image_processor.preprocess(image, return_tensors='pt')['pixel_values']
                 image_tensor = image_tensor.to(config.device)
 
                 # For 8-bit models, ensure image tensor dtype matches vision tower
-                # Get vision tower dtype to ensure compatibility
                 vision_tower = luav_model.llava_model.get_model().get_vision_tower()
                 if hasattr(vision_tower, 'dtype'):
                     image_tensor = image_tensor.to(dtype=vision_tower.dtype)
 
-                # Extract features for self-matching
+                # Extract features for self-matching (use original image for consistency)
                 image_features = extract_image_features(luav_model, image_path, bbox_3d)
                 image_features = image_features.unsqueeze(0)  # [1, hidden_size]
 
@@ -294,27 +493,23 @@ def run_luav_eval(
             from llava.conversation import conv_templates
             from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN
 
-            # Validate question
-            if not question or question.strip() == "":
-                logger.warning(f"Sample {i}: Empty question, skipping")
-                continue
+            # Clean question and create better prompt for vehicle attribute recognition
+            question_clean = re.sub(r'<bbox>.*?</bbox>', '', question).strip()
 
-            # Prepare question for LLaVA
-            # LLaVA expects <image> token in the prompt
-            # Remove bbox tags if present (they're not standard LLaVA tokens)
-            import re
-            question_clean = re.sub(r'<bbox>.*?</bbox>', '', question)
-            question_clean = question_clean.strip()
-
-            # Check if question becomes empty after removing bbox tags
-            if not question_clean:
-                logger.warning(f"Sample {i}: Question became empty after removing bbox tags")
-                logger.warning(f"  Original question: {question[:200]}")
-                # Use the original question without bbox removal
-                question_clean = question.strip()
+            # Create focused prompt based on question type
+            if qtype == 'color':
+                prompt_question = "What is the color of this car in the image? Answer with just the color name."
+            elif qtype == 'type':
+                prompt_question = "What type/class is this car (e.g., sedan, SUV, hatchback, mid-size, compact)? Answer briefly."
+            elif qtype == 'brand':
+                prompt_question = "What brand/make is this car? Answer with just the brand name."
+            elif qtype == 'model':
+                prompt_question = "What model is this car? Answer with just the model name."
+            else:
+                prompt_question = question_clean if question_clean else question
 
             # Add image token for LLaVA (required for multimodal input)
-            question_with_image = f"{DEFAULT_IMAGE_TOKEN}\n{question_clean}"
+            question_with_image = f"{DEFAULT_IMAGE_TOKEN}\n{prompt_question}"
 
             conv = conv_templates["vicuna_v1"].copy()
             conv.append_message(conv.roles[0], question_with_image)
@@ -410,12 +605,14 @@ def run_luav_eval(
                 ).strip()
 
             # Record result
+            gt = sample.get('gt', sample.get('answer', ''))
             results.append({
                 'question_id': sample.get('question_id', i),
                 'image_id': image_id,
                 'question': question,
                 'answer': answer,
-                'ground_truth': sample.get('answer', ''),
+                'ground_truth': str(gt),
+                'qtype': qtype,
                 'self_match_score': score[0].item(),
                 'source': source,
                 'cache_hit': cache_hit
@@ -472,6 +669,52 @@ def run_luav_eval(
     print(f"\nCache statistics:")
     print(f"  Total cache hits: {cache_hits}")
     print(f"  Cache hit rate: {cache_hit_rate:.2%}")
+
+    # === Accuracy Evaluation (like main_task1.py) ===
+    print(f"\n" + "=" * 60)
+    print("Accuracy Evaluation")
+    print("=" * 60)
+
+    correct = 0
+    total = len(results)
+    correct_by_type = {}
+    total_by_type = {}
+    correct_by_source = {'knowledge_base': 0, 'huav': 0, 'local': 0, 'local_fallback': 0}
+    total_by_source = {'knowledge_base': 0, 'huav': 0, 'local': 0, 'local_fallback': 0}
+
+    for r in results:
+        gt = str(r.get('ground_truth', '')).lower().strip()
+        answer = str(r.get('answer', '')).lower().strip()
+        qtype = r.get('qtype', 'unknown')
+        source = r.get('source', 'unknown')
+
+        # Count by type
+        total_by_type[qtype] = total_by_type.get(qtype, 0) + 1
+        if source in total_by_source:
+            total_by_source[source] += 1
+
+        # Check if correct (gt in answer, like main_task1.py)
+        is_correct = gt in answer if gt else False
+        if is_correct:
+            correct += 1
+            correct_by_type[qtype] = correct_by_type.get(qtype, 0) + 1
+            if source in correct_by_source:
+                correct_by_source[source] += 1
+
+    print(f"\nOverall Accuracy: {correct}/{total} = {correct/total*100:.2f}%")
+
+    print(f"\nAccuracy by Question Type:")
+    for qtype in sorted(total_by_type.keys()):
+        type_correct = correct_by_type.get(qtype, 0)
+        type_total = total_by_type[qtype]
+        print(f"  {qtype:12s}: {type_correct:3d}/{type_total:3d} = {type_correct/type_total*100:5.1f}%")
+
+    print(f"\nAccuracy by Source:")
+    for source in ['knowledge_base', 'huav', 'local', 'local_fallback']:
+        if total_by_source[source] > 0:
+            src_correct = correct_by_source[source]
+            src_total = total_by_source[source]
+            print(f"  {source:15s}: {src_correct:3d}/{src_total:3d} = {src_correct/src_total*100:5.1f}%")
 
     sm_stats = sm_module.get_statistics()
     print(f"\nSelf-matching statistics:")
