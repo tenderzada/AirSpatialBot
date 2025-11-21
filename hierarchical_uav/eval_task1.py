@@ -393,25 +393,21 @@ def run_luav_eval(
                         num_beams=1
                     )
 
-            # Debug: check generation length
-            new_tokens = output_ids.shape[1] - input_ids.shape[1]
-            if new_tokens <= 0:
-                logger.warning(f"Sample {i}: No new tokens generated (output={output_ids.shape[1]}, input={input_ids.shape[1]})")
-
             # Decode answer
-            answer = luav_model.tokenizer.decode(
-                output_ids[0, input_ids.shape[1]:],
-                skip_special_tokens=True
-            ).strip()
-
-            # Debug: log empty answers
-            if not answer:
-                logger.warning(f"Sample {i}: Empty answer after decoding")
-                logger.warning(f"  Question: {question_clean[:100]}")
-                logger.warning(f"  New tokens: {new_tokens}")
-                # Decode raw output for debugging
-                raw_output = luav_model.tokenizer.decode(output_ids[0], skip_special_tokens=False)
-                logger.warning(f"  Raw output (last 200 chars): ...{raw_output[-200:]}")
+            # Note: LLaVA generate() may return only generated tokens (not input+output)
+            # Check if output is shorter than input - if so, decode entire output
+            if output_ids.shape[1] <= input_ids.shape[1]:
+                # Model returned only generated tokens
+                answer = luav_model.tokenizer.decode(
+                    output_ids[0],
+                    skip_special_tokens=True
+                ).strip()
+            else:
+                # Model returned input + generated tokens
+                answer = luav_model.tokenizer.decode(
+                    output_ids[0, input_ids.shape[1]:],
+                    skip_special_tokens=True
+                ).strip()
 
             # Record result
             results.append({
