@@ -186,8 +186,22 @@ class NeuralMemory(nn.Module):
         # Compute associative memory loss
         loss = F.mse_loss(pred_value, target_value)
 
-        # Compute gradients
-        loss.backward()
+        # Compute gradients ONLY for MLP parameters (not entire computation graph)
+        # This saves huge amounts of memory by not computing gradients for vision tower etc.
+        mlp_params = list(self.mlp.parameters())
+        if mlp_params:
+            # Use torch.autograd.grad instead of loss.backward()
+            # This computes gradients only for specified parameters
+            grads = torch.autograd.grad(
+                loss,
+                mlp_params,
+                retain_graph=False,  # Don't keep computation graph (saves memory)
+                create_graph=False   # Don't create graph for second-order derivatives
+            )
+
+            # Assign computed gradients to parameters
+            for param, grad in zip(mlp_params, grads):
+                param.grad = grad
 
         # Update surprise with momentum
         # S_t = η * S_{t-1} - θ * (gradient signal)
