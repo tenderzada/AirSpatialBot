@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from hierarchical_uav.models import LLaVAWithMAC, UAVConfig, UAVType
 from hierarchical_uav.communication import HUAVServer, LUAVClient, SelfMatchingModule
+from hierarchical_uav.dynamic_memory_weight import DynamicMemoryWeightAdjuster
 from PIL import Image
 import numpy as np
 import pandas as pd
@@ -365,6 +366,16 @@ def run_luav_eval(
     ).to(config.device)
     print(f"✓ Self-matching module initialized (threshold={config.self_match_threshold})")
 
+    # Initialize dynamic memory weight adjuster (Phase 1 optimization)
+    weight_adjuster = DynamicMemoryWeightAdjuster(
+        base_weight=0.5,
+        min_weight=0.1,
+        max_weight=0.9
+    )
+    print(f"✓ Dynamic memory weight adjuster initialized")
+    print(f"  Strategy: Adaptive weighting based on self-match scores")
+    print(f"  Range: [{weight_adjuster.min_weight}, {weight_adjuster.max_weight}]")
+
     # Initialize vehicle knowledge base (like main_task1.py)
     knowledge_base = VehicleKnowledgeBase()
     csv_files = [
@@ -570,18 +581,36 @@ def run_luav_eval(
                 with torch.cuda.amp.autocast(enabled=config.load_8bit, dtype=torch.float16):
                     if memory_value is not None:
                         # H-UAV memory available - use memory-augmented generation
-                        if i % 10 == 0:  # Log every 10 samples to reduce verbosity
-                            logger.info(f"Sample {i}: Using H-UAV memory-augmented inference")
 
                         # Convert memory_value to the correct device and dtype
                         memory_value = memory_value.to(config.device).float()
+
+                        # PHASE 1 OPTIMIZATION: Dynamic memory weight based on self-match score
+                        # Compute adaptive weight instead of using fixed 0.5
+                        weight_result = weight_adjuster.compute_weight(
+                            self_match_score=score[0].item(),
+                            huav_confidence=None,  # TODO: Can be added from H-UAV response
+                            luav_confidence=None   # TODO: Can be extracted from L-UAV logits
+                        )
+                        memory_weight = weight_result['weight']
+
+                        # Log decision for analysis
+                        if i % 10 == 0:  # Log every 10 samples to reduce verbosity
+                            decision_summary = weight_adjuster.get_decision_summary(memory_weight)
+                            logger.info(
+                                f"Sample {i}: Using H-UAV memory-augmented inference\n"
+                                f"  Self-match score: {score[0].item():.4f}\n"
+                                f"  Memory weight: {memory_weight:.4f}\n"
+                                f"  Strategy: {weight_result['strategy']}\n"
+                                f"  Decision: {decision_summary}"
+                            )
 
                         # Call generate_with_memory to inject H-UAV memory features
                         output_ids = luav_model.generate_with_memory(
                             input_ids=input_ids,
                             images=image_tensor,
                             memory_features=memory_value,
-                            memory_weight=0.5,  # Balance between image and memory
+                            memory_weight=memory_weight,  # ADAPTIVE WEIGHT (was fixed 0.5)
                             max_new_tokens=512,
                             min_new_tokens=1,
                             do_sample=False,
@@ -682,6 +711,19 @@ def run_luav_eval(
     print(f"\nCache statistics:")
     print(f"  Total cache hits: {cache_hits}")
     print(f"  Cache hit rate: {cache_hit_rate:.2%}")
+
+    # Dynamic memory weight statistics (Phase 1 optimization)
+    print(f"\n" + "=" * 60)
+    print("Dynamic Memory Weight Statistics (Phase 1)")
+    print("=" * 60)
+    print(f"Strategy: Adaptive weighting based on self-match scores")
+    print(f"Weight range: [{weight_adjuster.min_weight}, {weight_adjuster.max_weight}]")
+    print(f"\nExpected behavior:")
+    print(f"  • High self-match (>0.7) → Higher weight (0.6-0.8)")
+    print(f"  • Medium self-match (0.5-0.7) → Moderate weight (0.3-0.6)")
+    print(f"  • Low self-match (<0.5) → Low weight (0.1-0.3)")
+    print(f"\nNote: With current untrained self-matching, most scores will be ~0.5")
+    print(f"      After Phase 3 (training), scores will become more discriminative")
 
     # === Accuracy Evaluation (like main_task1.py) ===
     print(f"\n" + "=" * 60)
