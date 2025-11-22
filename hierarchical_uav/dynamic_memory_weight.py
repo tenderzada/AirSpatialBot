@@ -95,19 +95,26 @@ class DynamicMemoryWeightAdjuster:
         """
         Compute weight from self-matching score alone.
 
-        Logic:
+        Logic (ADJUSTED for untrained self-matching):
         - High score (>0.7): High relevance → higher weight
-        - Medium score (0.5-0.7): Uncertain → moderate weight
-        - Low score (<0.5): Low relevance → very low weight
+        - Medium score (0.5-0.7): Uncertain → moderate weight (INCREASED)
+        - Low score (0.4-0.5): Low-moderate → still usable (INCREASED)
+        - Very low score (<0.4): Low relevance → reduced weight
+
+        Note: With untrained self-matching, scores cluster around 0.5.
+              We use more aggressive weights to avoid completely ignoring memory.
+              After Phase 3 training, can revert to more conservative thresholds.
         """
         if score > 0.8:
             return 0.8  # High confidence in relevance
         elif score > 0.7:
-            return 0.6  # Good relevance
+            return 0.7  # Good relevance (increased from 0.6)
         elif score > 0.5:
-            return 0.3  # Moderate relevance
+            return 0.5  # Moderate relevance (increased from 0.3)
+        elif score > 0.4:
+            return 0.4  # Low-moderate (new tier, was 0.1)
         else:
-            return 0.1  # Low relevance, use memory sparingly
+            return 0.3  # Low relevance (increased from 0.1)
 
     def _weight_from_huav_relevance(
         self,
