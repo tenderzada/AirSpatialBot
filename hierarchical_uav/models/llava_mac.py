@@ -190,10 +190,18 @@ class LLaVAWithMAC(nn.Module):
 
             # Apply MAC layer to enhance features
             if hasattr(self, 'mac_layer'):
-                image_features, memory_metrics = self.mac_layer(
-                    image_features,
+                # Ensure dtype consistency for MAC layer
+                # MAC layer uses float32 for stability in test-time learning
+                original_dtype = image_features.dtype
+                image_features_float = image_features.float()
+
+                image_features_float, memory_metrics = self.mac_layer(
+                    image_features_float,
                     update_memory=update_memory
                 )
+
+                # Convert back to original dtype for LLaVA
+                image_features = image_features_float.to(original_dtype)
             else:
                 memory_metrics = {}
         else:
@@ -239,10 +247,17 @@ class LLaVAWithMAC(nn.Module):
             image_features = self.llava_model.get_model().get_vision_tower()(images)
             image_features = self.llava_model.get_model().mm_projector(image_features)
 
-            image_features, _ = self.mac_layer(
-                image_features,
+            # Ensure dtype consistency for MAC layer
+            original_dtype = image_features.dtype
+            image_features_float = image_features.float()
+
+            image_features_float, _ = self.mac_layer(
+                image_features_float,
                 update_memory=False  # Don't update during generation
             )
+
+            # Convert back to original dtype
+            image_features = image_features_float.to(original_dtype)
 
             # Generate using enhanced features
             outputs = self.llava_model.generate(

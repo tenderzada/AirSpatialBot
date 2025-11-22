@@ -231,6 +231,10 @@ class MACLayer(nn.Module):
         if update_memory is None:
             update_memory = self.config.enable_memory_update
 
+        # Ensure float32 for numerical stability in test-time learning
+        # This is critical when model uses mixed precision (8-bit loading)
+        hidden_states = hidden_states.float()
+
         batch_size, seq_len, hidden_size = hidden_states.shape
 
         metrics = {
