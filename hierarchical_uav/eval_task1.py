@@ -404,6 +404,7 @@ def run_luav_eval(
     results = []
     local_count = 0
     remote_count = 0
+    forced_query_count = 0  # Track samples forced to query H-UAV
 
     for i, sample in enumerate(tqdm(test_data, desc="L-UAV Evaluation")):
         try:
@@ -441,11 +442,19 @@ def run_luav_eval(
             # Determine question type
             qtype = get_question_type(question)
 
+            # === Research Mode: Force Query Rate ===
+            # Randomly force some samples to query H-UAV for testing memory mechanism
+            import random
+            force_query_huav = random.random() < config.force_query_rate
+            if force_query_huav:
+                forced_query_count += 1
+
             # === Strategy: Use knowledge base for brand/model/price/type/powertrain ===
             # Use VLM for color (requires visual understanding)
             kb_answer = None
-            if knowledge_base.df is not None and bbox_2d is not None:
+            if knowledge_base.df is not None and bbox_2d is not None and not force_query_huav:
                 # Try to get answer from knowledge base (like main_task1.py)
+                # Skip KB lookup if forced to query H-UAV (for research)
                 kb_result = knowledge_base.query_by_image_bbox(image_id, bbox_2d)
                 if kb_result and qtype in kb_result and kb_result[qtype]:
                     kb_answer = str(kb_result[qtype])
@@ -704,6 +713,12 @@ def run_luav_eval(
     print(f"Total samples: {len(results)}")
     print(f"Local decisions: {local_count} ({local_count/len(results)*100:.1f}%)")
     print(f"Remote queries: {remote_count} ({remote_count/len(results)*100:.1f}%)")
+    if forced_query_count > 0:
+        print(f"  ↳ Forced queries (research mode): {forced_query_count} ({forced_query_count/len(results)*100:.1f}%)")
+        natural_query_count = remote_count - forced_query_count
+        if natural_query_count < 0:
+            natural_query_count = 0
+        print(f"  ↳ Natural queries (self-matching): {natural_query_count} ({natural_query_count/len(results)*100:.1f}%)")
 
     # Cache statistics
     cache_hits = sum(1 for r in results if r.get('cache_hit', False))
@@ -826,6 +841,14 @@ def main():
     parser.add_argument('--port', type=int, default=50051, help='Server port (H-UAV)')
     parser.add_argument('--huav_address', type=str, default='localhost:50051', help='H-UAV address (L-UAV)')
     parser.add_argument('--threshold', type=float, default=0.7, help='Self-matching threshold (L-UAV)')
+    parser.add_argument(
+        '--force-query-rate',
+        type=float,
+        default=0.0,
+        help='Force this percentage of samples to query H-UAV (0.0-1.0). '
+             'For research: bypass KB lookup for X%% of samples to test memory mechanism. '
+             'Example: 0.3 = force 30%% of samples to query H-UAV'
+    )
 
     # Data configuration
     parser.add_argument(
@@ -898,6 +921,12 @@ def main():
             load_4bit=args.load_4bit
         )
         config.image_dir = args.image_dir
+        config.force_query_rate = args.force_query_rate
+
+        # Log research mode settings
+        if args.force_query_rate > 0:
+            print(f"\n⚠️  RESEARCH MODE: Force query rate = {args.force_query_rate*100:.1f}%")
+            print(f"   → {args.force_query_rate*100:.1f}% of samples will bypass KB and test H-UAV memory\n")
 
         run_luav_eval(config, test_data, args.output)
 
