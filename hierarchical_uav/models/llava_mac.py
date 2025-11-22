@@ -439,9 +439,17 @@ class LLaVAWithMAC(nn.Module):
         logger.debug(f"Final inputs_embeds shape: {final_inputs_embeds.shape}")
         logger.debug(f"Final attention_mask shape: {final_attention_mask.shape}")
 
-        # Call the underlying language model's generate method
-        # This bypasses LLaVA's image encoding logic entirely
-        outputs = llama_model.generate(
+        # Call generate using transformers' GenerationMixin to bypass LLaVA's inputs_embeds restriction
+        # LLaVA's generate() raises NotImplementedError for inputs_embeds
+        # But the underlying transformers GenerationMixin supports it
+        # We directly call the parent class's generate method
+
+        from transformers.generation.utils import GenerationMixin
+
+        # Call GenerationMixin.generate directly, bypassing LLaVA's override
+        # self.llava_model is LlavaLlamaForCausalLM which inherits from GenerationMixin
+        outputs = GenerationMixin.generate(
+            self.llava_model,
             inputs_embeds=final_inputs_embeds,
             attention_mask=final_attention_mask,
             **filtered_kwargs
