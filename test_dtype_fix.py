@@ -37,8 +37,22 @@ def test_dtype_fix():
     )
 
     print("\n1. Loading H-UAV model with 8-bit quantization...")
+
+    # Clear CUDA cache to free up fragmented memory
+    torch.cuda.empty_cache()
+    print("   - Cleared CUDA cache")
+
     try:
         model = LLaVAWithMAC(config)
+
+        # Enable gradient checkpointing to reduce memory usage
+        # This trades compute for memory by recomputing activations during backward pass
+        if hasattr(model.llava_model, 'enable_input_require_grads'):
+            model.llava_model.enable_input_require_grads()
+        if hasattr(model.llava_model.model, 'gradient_checkpointing_enable'):
+            model.llava_model.model.gradient_checkpointing_enable()
+            print("   - Enabled gradient checkpointing (saves memory)")
+
         print("   ✓ Model loaded successfully")
     except Exception as e:
         print(f"   ✗ Model loading failed: {e}")
@@ -91,6 +105,15 @@ def test_dtype_fix():
 
     # Test forward pass with MAC layer
     print("\n5. Testing forward pass through MAC layer...")
+
+    # Clear cache before forward pass to maximize available memory
+    torch.cuda.empty_cache()
+
+    # Print memory stats
+    allocated = torch.cuda.memory_allocated(0) / 1024**3
+    reserved = torch.cuda.memory_reserved(0) / 1024**3
+    print(f"   - GPU memory: {allocated:.2f} GB allocated, {reserved:.2f} GB reserved")
+
     try:
         # Test-time learning requires gradients, so NO torch.no_grad()!
         input_ids = model.tokenizer("Test question", return_tensors='pt')['input_ids'].to(config.device)

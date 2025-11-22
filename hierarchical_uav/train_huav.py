@@ -272,6 +272,10 @@ def train_huav(
                         f"loss={loss:.4f}, surprise={surprise:.4f}"
                     )
 
+                # Clear CUDA cache periodically to prevent memory fragmentation
+                if (i + 1) % 10 == 0:
+                    torch.cuda.empty_cache()
+
             except Exception as e:
                 skip_reasons['errors'] += 1
                 if i < 5:  # Log first few errors
@@ -489,6 +493,15 @@ def main():
     # Load H-UAV model
     logger.info(f"\nLoading H-UAV model on {config.device}...")
     huav_model = LLaVAWithMAC(config)
+
+    # Enable gradient checkpointing to reduce memory usage during training
+    # This is critical for training on 24GB GPUs with 7B models
+    if hasattr(huav_model.llava_model, 'enable_input_require_grads'):
+        huav_model.llava_model.enable_input_require_grads()
+    if hasattr(huav_model.llava_model.model, 'gradient_checkpointing_enable'):
+        huav_model.llava_model.model.gradient_checkpointing_enable()
+        logger.info("✓ Enabled gradient checkpointing (memory-efficient training)")
+
     logger.info("✓ H-UAV model loaded")
 
     # Resume from checkpoint if specified
