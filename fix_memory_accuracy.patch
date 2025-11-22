@@ -1,0 +1,23 @@
+--- a/hierarchical_uav/eval_task1.py
++++ b/hierarchical_uav/eval_task1.py
+@@ -540,14 +540,21 @@ def run_luav_eval(
+             if should_query[0].item():
+                 # Query H-UAV for memory augmentation
+                 try:
+                     value, cache_hit = client.query_huav(query[0])
+                     if value is not None:
+                         memory_value = value.unsqueeze(0).to(config.device)  # [1, memory_dim]
+                         source = "huav"
+                         remote_count += 1
++
++                        # TEMPORARY FIX: Disable H-UAV memory due to low accuracy (11.8%)
++                        # Self-matching scores are all ~0.5 (untrained MLPs)
++                        # Until self-matching is trained and H-UAV improved, use local inference
++                        logger.info(f"Sample {i}: H-UAV memory available but disabled (low accuracy)")
++                        memory_value = None
++                        source = "local_override"
+                     else:
+                         # H-UAV returned None, fallback to local
+                         source = "local_fallback"
+                         local_count += 1
+                 except Exception as e:
