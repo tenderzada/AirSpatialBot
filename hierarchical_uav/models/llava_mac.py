@@ -121,6 +121,11 @@ class LLaVAWithMAC(nn.Module):
         # This enhances the vision-language connector with memory
         self.mac_layer = MACLayer(mac_config)
 
+        # CRITICAL: Ensure MAC layer uses float32 for numerical stability
+        # This is essential for test-time learning, especially with 8-bit models
+        # Float32 provides precise gradients for surprise-driven updates
+        self.mac_layer = self.mac_layer.float()
+
         # Register as a module
         self.add_module('mac_layer', self.mac_layer)
 
@@ -130,6 +135,8 @@ class LLaVAWithMAC(nn.Module):
             self.config.memory_dim,
             self.llava_model.config.hidden_size
         )
+        # Also ensure projection layer is float32
+        self.memory_to_visual_proj = self.memory_to_visual_proj.float()
         self.add_module('memory_to_visual_proj', self.memory_to_visual_proj)
 
     def _configure_huav(self):
