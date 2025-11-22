@@ -279,8 +279,8 @@ class LLaVAWithMAC(nn.Module):
             1. Extract image features from vision encoder + mm_projector
             2. Project memory_features to visual token space
             3. Concatenate: [image_features || memory_tokens]
-            4. Manually prepare inputs_embeds to bypass LLaVA's image encoding
-            5. Pass to language model's generate method
+            4. Pass augmented features (3D tensor) to LLaVA's generate
+               LLaVA will recognize it as pre-encoded features and skip encoding
 
         Args:
             input_ids: [batch_size, seq_len] token IDs
@@ -350,79 +350,100 @@ class LLaVAWithMAC(nn.Module):
 
             final_image_features = image_features
 
-        # CRITICAL FIX: Manually prepare inputs to avoid re-encoding features
-        # We need to use LLaVA's prepare_inputs_labels_for_multimodal method
-        # but provide pre-computed image_features to skip the encoding step
+        # CRITICAL FIX: Manually construct inputs_embeds to bypass LLaVA's image encoding
+        #
+        # Problem: LLaVA's generate() and prepare_inputs_labels_for_multimodal() both
+        #          call encode_images(), causing double encoding of pre-computed features
+        # Solution: Manually construct inputs_embeds by inserting image features into text embeddings
+        #           then call the underlying language model's generate
+
+        logger.debug(f"Manually preparing inputs with pre-encoded features of shape: {final_image_features.shape}")
+
+        # Get the underlying language model
+        llama_model = self.llava_model.get_model()
 
         # Get text embeddings
-        input_embeds = self.llava_model.get_model().embed_tokens(input_ids)
+        input_embeds = llama_model.embed_tokens(input_ids)
 
         # Find IMAGE_TOKEN_INDEX (usually -200)
         IMAGE_TOKEN_INDEX = -200
         if hasattr(self.llava_model.config, 'image_token_index'):
             IMAGE_TOKEN_INDEX = self.llava_model.config.image_token_index
 
-        # Locate image token positions
+        # Locate image token positions in input_ids
         batch_size = input_ids.shape[0]
         image_token_mask = input_ids == IMAGE_TOKEN_INDEX
 
-        # Replace image token embeddings with actual image features
+        # Manually insert image features into the embedding sequence
         new_input_embeds = []
+        new_attention_masks = []
+
         for b in range(batch_size):
             mask = image_token_mask[b]
-            if mask.sum() > 0:
-                # Found image token
-                text_before = input_embeds[b, :mask.argmax(), :]
-                text_after = input_embeds[b, mask.argmax()+1:, :]
 
-                # Concatenate: [text_before || image_features || text_after]
-                combined = torch.cat([
-                    text_before,
-                    final_image_features[b],  # Insert image features
-                    text_after
-                ], dim=0)
-                new_input_embeds.append(combined)
-            else:
-                # No image token, use text embeddings as-is
+            if mask.sum() == 0:
+                # No image token found - use text embeddings as-is
                 new_input_embeds.append(input_embeds[b])
+                new_attention_masks.append(torch.ones(input_embeds[b].shape[0], device=input_embeds.device))
+                continue
 
-        # Pad sequences to same length
+            # Find the position of the image token
+            image_token_pos = mask.argmax()
+
+            # Split text embeddings: before and after image token
+            text_before = input_embeds[b, :image_token_pos, :]
+            text_after = input_embeds[b, image_token_pos + 1:, :]
+
+            # Concatenate: [text_before || image_features || text_after]
+            combined_embeds = torch.cat([
+                text_before,
+                final_image_features[b],  # Insert image features (with memory augmentation)
+                text_after
+            ], dim=0)
+
+            new_input_embeds.append(combined_embeds)
+            new_attention_masks.append(torch.ones(combined_embeds.shape[0], device=combined_embeds.device))
+
+        # Pad sequences to same length for batch processing
         max_len = max(e.shape[0] for e in new_input_embeds)
-        padded_embeds = []
-        attention_mask = []
 
-        for embeds in new_input_embeds:
+        padded_embeds = []
+        padded_masks = []
+
+        for embeds, mask in zip(new_input_embeds, new_attention_masks):
             pad_len = max_len - embeds.shape[0]
+
             if pad_len > 0:
-                # Pad with zeros
+                # Pad embeddings with zeros
                 padding = torch.zeros(
                     (pad_len, embeds.shape[1]),
                     dtype=embeds.dtype,
                     device=embeds.device
                 )
                 padded_embeds.append(torch.cat([embeds, padding], dim=0))
-                # Attention mask: 1 for real tokens, 0 for padding
-                mask = torch.cat([
-                    torch.ones(embeds.shape[0], device=embeds.device),
-                    torch.zeros(pad_len, device=embeds.device)
+
+                # Extend attention mask (0 for padding)
+                padded_mask = torch.cat([
+                    mask,
+                    torch.zeros(pad_len, device=mask.device)
                 ])
-                attention_mask.append(mask)
+                padded_masks.append(padded_mask)
             else:
                 padded_embeds.append(embeds)
-                attention_mask.append(torch.ones(embeds.shape[0], device=embeds.device))
+                padded_masks.append(mask)
 
-        # Stack into batch
-        inputs_embeds = torch.stack(padded_embeds, dim=0)  # [batch, max_len, hidden_size]
-        attention_mask = torch.stack(attention_mask, dim=0).long()  # [batch, max_len]
+        # Stack into batch tensors
+        final_inputs_embeds = torch.stack(padded_embeds, dim=0)  # [batch, max_len, hidden_size]
+        final_attention_mask = torch.stack(padded_masks, dim=0).long()  # [batch, max_len]
 
-        logger.debug(f"Final inputs_embeds shape: {inputs_embeds.shape}")
-        logger.debug(f"Attention mask shape: {attention_mask.shape}")
+        logger.debug(f"Final inputs_embeds shape: {final_inputs_embeds.shape}")
+        logger.debug(f"Final attention_mask shape: {final_attention_mask.shape}")
 
-        # Generate using the language model directly with prepared embeddings
-        # This bypasses LLaVA's image encoding
-        outputs = self.llava_model.generate(
-            inputs_embeds=inputs_embeds,
-            attention_mask=attention_mask,
+        # Call the underlying language model's generate method
+        # This bypasses LLaVA's image encoding logic entirely
+        outputs = llama_model.generate(
+            inputs_embeds=final_inputs_embeds,
+            attention_mask=final_attention_mask,
             **filtered_kwargs
         )
 
