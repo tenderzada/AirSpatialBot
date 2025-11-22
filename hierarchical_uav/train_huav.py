@@ -232,12 +232,13 @@ def train_huav(
                 input_ids = model.tokenizer(prompt, return_tensors='pt')['input_ids'].to(config.device)
 
                 # Forward pass with memory update enabled
-                with torch.no_grad():
-                    outputs = model(
-                        input_ids=input_ids,
-                        images=image_tensor,
-                        update_memory=True  # Enable test-time learning!
-                    )
+                # IMPORTANT: Do NOT use torch.no_grad() for test-time learning!
+                # Memory update requires gradients for surprise-driven learning
+                outputs = model(
+                    input_ids=input_ids,
+                    images=image_tensor,
+                    update_memory=True  # Enable test-time learning!
+                )
 
                 # Extract metrics
                 memory_metrics = outputs.get('memory_metrics', {})

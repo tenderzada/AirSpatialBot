@@ -92,14 +92,13 @@ def test_dtype_fix():
     # Test forward pass with MAC layer
     print("\n5. Testing forward pass through MAC layer...")
     try:
-        with torch.no_grad():
-            # This is what happens during training
-            input_ids = model.tokenizer("Test question", return_tensors='pt')['input_ids'].to(config.device)
-            outputs = model(
-                input_ids=input_ids,
-                images=image_tensor,  # Use properly processed image tensor
-                update_memory=True  # Enable memory update like in training
-            )
+        # Test-time learning requires gradients, so NO torch.no_grad()!
+        input_ids = model.tokenizer("Test question", return_tensors='pt')['input_ids'].to(config.device)
+        outputs = model(
+            input_ids=input_ids,
+            images=image_tensor,  # Use properly processed image tensor
+            update_memory=True  # Enable memory update like in training
+        )
         print("   ✓ Forward pass successful - no dtype errors!")
 
         # Check memory metrics
