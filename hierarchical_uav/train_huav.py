@@ -80,6 +80,50 @@ def load_training_data(data_path: str) -> List[Dict]:
     return data
 
 
+def validate_data(train_data: List[Dict], image_dir: str) -> Dict:
+    """
+    Validate training data and return statistics.
+
+    Returns dict with:
+        - total: Total samples
+        - has_question: Samples with questions
+        - has_image: Samples with existing images
+        - valid: Samples that have both
+    """
+    stats = {
+        'total': len(train_data),
+        'has_question': 0,
+        'has_image': 0,
+        'valid': 0,
+        'sample_keys': set()
+    }
+
+    for i, sample in enumerate(train_data[:100]):  # Check first 100
+        # Collect all keys to understand data structure
+        stats['sample_keys'].update(sample.keys())
+
+        # Check question
+        has_q = False
+        if 'question' in sample and sample['question']:
+            has_q = True
+        elif 'conversations' in sample and len(sample['conversations']) > 0:
+            has_q = True
+        if has_q:
+            stats['has_question'] += 1
+
+        # Check image
+        image_id = sample.get('image_id', sample.get('image', ''))
+        if image_id:
+            image_path = os.path.join(image_dir, image_id)
+            if os.path.exists(image_path):
+                stats['has_image'] += 1
+                if has_q:
+                    stats['valid'] += 1
+
+    stats['sample_keys'] = list(stats['sample_keys'])
+    return stats
+
+
 def train_huav(
     model: LLaVAWithMAC,
     train_data: List[Dict],
@@ -134,6 +178,13 @@ def train_huav(
         # Progress bar
         pbar = tqdm(train_data, desc=f"Epoch {epoch+1}")
 
+        # Track skip reasons for debugging
+        skip_reasons = {
+            'no_question': 0,
+            'no_image': 0,
+            'errors': 0
+        }
+
         for i, sample in enumerate(pbar):
             try:
                 # Get image path and question
@@ -145,14 +196,21 @@ def train_huav(
                 elif 'conversations' in sample and len(sample['conversations']) > 0:
                     question = sample['conversations'][0].get('value', '')
                 else:
+                    skip_reasons['no_question'] += 1
+                    if i < 5:  # Log first few skips
+                        logger.warning(f"Sample {i}: No question found. Keys: {list(sample.keys())}")
                     continue
 
                 if not question or question.strip() == "":
+                    skip_reasons['no_question'] += 1
                     continue
 
                 # Load image
                 image_path = os.path.join(args.image_dir, image_id)
                 if not os.path.exists(image_path):
+                    skip_reasons['no_image'] += 1
+                    if i < 5:  # Log first few skips
+                        logger.warning(f"Sample {i}: Image not found at {image_path}")
                     continue
 
                 image = Image.open(image_path).convert('RGB')
@@ -214,7 +272,9 @@ def train_huav(
                     )
 
             except Exception as e:
-                logger.warning(f"Error processing sample {i}: {e}")
+                skip_reasons['errors'] += 1
+                if i < 5:  # Log first few errors
+                    logger.warning(f"Error processing sample {i}: {e}")
                 continue
 
         # Epoch summary
@@ -231,9 +291,26 @@ def train_huav(
 
         logger.info(f"\nEpoch {epoch+1} Summary:")
         logger.info(f"  Samples processed: {epoch_samples}")
-        logger.info(f"  Average loss: {avg_epoch_loss:.4f}")
-        logger.info(f"  Average surprise: {avg_epoch_surprise:.4f}")
-        logger.info(f"  High surprise samples: {high_surprise_count} ({high_surprise_count/epoch_samples*100:.1f}%)")
+
+        # Report skip reasons if samples were skipped
+        total_skipped = skip_reasons['no_question'] + skip_reasons['no_image'] + skip_reasons['errors']
+        if total_skipped > 0:
+            logger.warning(f"  Samples skipped: {total_skipped}")
+            logger.warning(f"    - No question: {skip_reasons['no_question']}")
+            logger.warning(f"    - Image not found: {skip_reasons['no_image']}")
+            logger.warning(f"    - Errors: {skip_reasons['errors']}")
+
+        if epoch_samples > 0:
+            logger.info(f"  Average loss: {avg_epoch_loss:.4f}")
+            logger.info(f"  Average surprise: {avg_epoch_surprise:.4f}")
+            logger.info(f"  High surprise samples: {high_surprise_count} ({high_surprise_count/epoch_samples*100:.1f}%)")
+        else:
+            logger.error(f"  ⚠️  NO SAMPLES PROCESSED!")
+            logger.error(f"  Please check:")
+            logger.error(f"    1. Training data path: {args.train_data}")
+            logger.error(f"    2. Image directory: {args.image_dir}")
+            logger.error(f"    3. Data format (see logs above)")
+            break  # Stop training if no samples processed
 
         # Save checkpoint
         if (epoch + 1) % args.save_interval == 0:
@@ -246,10 +323,23 @@ def train_huav(
 
     # Final statistics
     logger.info(f"\n{'='*70}")
-    logger.info("Training Complete!")
+    if total_samples > 0:
+        logger.info("Training Complete!")
+    else:
+        logger.error("Training Failed - No Samples Processed!")
     logger.info(f"{'='*70}")
     logger.info(f"Total samples processed: {total_samples}")
-    logger.info(f"Total epochs: {args.num_epochs}")
+    logger.info(f"Total epochs completed: {len(epoch_stats)}/{args.num_epochs}")
+
+    # Only save if we processed samples
+    if total_samples == 0:
+        logger.error("\n❌ Training failed - no samples were processed!")
+        logger.error("\nCommon issues:")
+        logger.error("  1. Image directory path is incorrect")
+        logger.error("  2. Data file format doesn't match expected structure")
+        logger.error("  3. All images are missing from the directory")
+        logger.error("\nPlease check the warning messages above for details.")
+        return epoch_stats
 
     # Save final model
     final_path = os.path.join(args.output_dir, 'huav_memory_final.pt')
@@ -358,6 +448,24 @@ def main():
     logger.info(f"Loading training data from {args.train_data}...")
     train_data = load_training_data(args.train_data)
     logger.info(f"✓ Loaded {len(train_data)} training samples")
+
+    # Validate data before training
+    logger.info(f"\nValidating data (checking first 100 samples)...")
+    validation_stats = validate_data(train_data, args.image_dir)
+    logger.info(f"  Sample keys found: {validation_stats['sample_keys']}")
+    logger.info(f"  Samples with questions: {validation_stats['has_question']}/100")
+    logger.info(f"  Samples with images: {validation_stats['has_image']}/100")
+    logger.info(f"  Valid samples (both): {validation_stats['valid']}/100")
+
+    if validation_stats['valid'] == 0:
+        logger.error("\n❌ No valid samples found!")
+        logger.error("Please check:")
+        logger.error(f"  1. Image directory exists: {args.image_dir}")
+        logger.error(f"  2. Data file format matches expected structure")
+        logger.error(f"  3. Sample has required keys: {validation_stats['sample_keys']}")
+        return
+
+    logger.info(f"✓ Data validation passed")
 
     # Create H-UAV configuration
     config = UAVConfig.create_huav_config(
