@@ -271,7 +271,9 @@ class MACLayer(nn.Module):
         output = self.ln_post(output)
 
         # 5. Update long-term memory (if enabled)
-        if update_memory and self.training:
+        # IMPORTANT: Test-time learning works in eval mode!
+        # We update memory during inference to continuously adapt
+        if update_memory:
             # Use output features as target for memory update
             target_features = output.mean(dim=1)  # [B, H]
             target_memory = self.memory_query_proj(target_features)  # [B, memory_dim]

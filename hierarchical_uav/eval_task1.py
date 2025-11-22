@@ -282,6 +282,12 @@ def run_huav_eval(
     huav_model = LLaVAWithMAC(config)
     print("✓ H-UAV model loaded")
 
+    # Load trained memory if specified
+    if hasattr(config, 'load_memory') and config.load_memory:
+        print(f"\nLoading trained MAC memory from {config.load_memory}...")
+        huav_model.load_mac_state(config.load_memory)
+        print("✓ Trained memory loaded - H-UAV ready with learned representations")
+
     # Start server
     server = HUAVServer(
         huav_model=huav_model,
@@ -874,6 +880,13 @@ def main():
     parser.add_argument('--memory_dim', type=int, default=4096)
     parser.add_argument('--num_persistent_tokens', type=int, default=64)
     parser.add_argument('--num_memory_tokens', type=int, default=128)
+    parser.add_argument(
+        '--load-memory',
+        type=str,
+        default=None,
+        help='Load trained MAC memory from checkpoint (H-UAV only). '
+             'Example: ./outputs/huav_training/huav_memory_final.pt'
+    )
 
     # Quantization options
     parser.add_argument('--load_8bit', action='store_true', help='Use 8-bit quantization to reduce memory')
@@ -904,6 +917,7 @@ def main():
         )
         config.huav_address = f"0.0.0.0:{args.port}"
         config.image_dir = args.image_dir
+        config.load_memory = args.load_memory  # Path to trained memory checkpoint
 
         run_huav_eval(config, test_data, args.output)
 
