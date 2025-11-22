@@ -124,6 +124,14 @@ class LLaVAWithMAC(nn.Module):
         # Register as a module
         self.add_module('mac_layer', self.mac_layer)
 
+        # Add memory projection layer to convert memory_dim to hidden_size
+        # This allows injecting H-UAV memory as additional visual tokens
+        self.memory_to_visual_proj = nn.Linear(
+            self.config.memory_dim,
+            self.llava_model.config.hidden_size
+        )
+        self.add_module('memory_to_visual_proj', self.memory_to_visual_proj)
+
     def _configure_huav(self):
         """Configure model for H-UAV (enable learning)."""
 
@@ -264,24 +272,26 @@ class LLaVAWithMAC(nn.Module):
         """
         Generate text with optional memory augmentation from H-UAV.
 
-        Note: Currently, memory features are not directly injected into generation
-        due to LLaVA's architecture constraints. Instead, the presence of memory
-        provides a signal that this query has been validated by H-UAV.
+        This method injects H-UAV memory features as additional visual tokens,
+        effectively augmenting the visual context for better inference.
 
-        Future improvement: Modify LLaVA's prepare_inputs_labels_for_multimodal
-        to support memory feature injection.
+        Strategy:
+            1. Extract image features from vision encoder + mm_projector
+            2. Project memory_features to visual token space
+            3. Concatenate: [image_features || memory_tokens]
+            4. Pass augmented features to LLaVA generation
 
         Args:
             input_ids: [batch_size, seq_len] token IDs
             images: [batch_size, 3, H, W] raw images
-            memory_features: Optional [batch_size, memory_dim] memory from H-UAV (currently unused)
+            memory_features: Optional [batch_size, memory_dim] memory from H-UAV
             memory_weight: Weight for memory fusion (0.0-1.0)
             **kwargs: Generation arguments
 
         Returns:
             generated_ids: [batch_size, generated_len] token IDs
         """
-        # Validate inputs before passing to LLaVA
+        # Validate inputs
         if input_ids is None:
             raise ValueError("input_ids cannot be None")
         if images is None:
@@ -289,23 +299,63 @@ class LLaVAWithMAC(nn.Module):
 
         import logging
         logger = logging.getLogger(__name__)
-        logger.debug(f"generate_with_memory: input_ids.shape={input_ids.shape}, images.shape={images.shape}")
 
         # Remove custom parameters that LLaVA doesn't accept
-        # memory_features and memory_weight are our custom parameters
         filtered_kwargs = {k: v for k, v in kwargs.items()
                           if k not in ['memory_features', 'memory_weight']}
 
-        # For now, simply use standard generation
-        # Memory features serve as validation that H-UAV has processed this query
-        # TODO: Implement actual memory injection by modifying LLaVA's forward pass
+        # Process images through vision encoder and mm_projector
+        vision_tower = self.llava_model.get_model().get_vision_tower()
+        mm_projector = self.llava_model.get_model().mm_projector
 
-        # Note: LLaVA's generate() expects 'inputs' parameter, not 'input_ids'
-        outputs = self.llava_model.generate(
-            inputs=input_ids,  # Changed from input_ids to inputs
-            images=images,  # Pass raw images, not processed features
-            **filtered_kwargs
-        )
+        # Extract image features
+        image_features = vision_tower(images)  # [batch, num_patches, vision_hidden_size]
+        image_features = mm_projector(image_features)  # [batch, num_patches, hidden_size]
+
+        logger.debug(f"Image features shape: {image_features.shape}")
+
+        # Inject memory features if provided
+        if memory_features is not None and hasattr(self, 'memory_to_visual_proj'):
+            # Ensure memory_features has correct shape [batch, memory_dim]
+            if len(memory_features.shape) == 1:
+                memory_features = memory_features.unsqueeze(0)
+
+            batch_size = memory_features.shape[0]
+
+            # Project memory to visual token space [batch, memory_dim] -> [batch, hidden_size]
+            memory_tokens = self.memory_to_visual_proj(memory_features)  # [batch, hidden_size]
+
+            # Reshape to match image features: [batch, 1, hidden_size]
+            # This creates 1 "memory token" per sample
+            memory_tokens = memory_tokens.unsqueeze(1)
+
+            # Apply memory weight for controlled fusion
+            memory_tokens = memory_tokens * memory_weight
+
+            # Concatenate memory tokens with image features
+            # Result: [batch, num_patches + 1, hidden_size]
+            augmented_features = torch.cat([image_features, memory_tokens], dim=1)
+
+            logger.debug(f"Memory augmented features shape: {augmented_features.shape}")
+            logger.debug(f"Memory injection: added {memory_tokens.shape[1]} memory tokens with weight {memory_weight}")
+
+            # Generate using augmented features
+            outputs = self.llava_model.generate(
+                inputs=input_ids,
+                images=augmented_features,  # Pass augmented features instead of raw images
+                **filtered_kwargs
+            )
+
+        else:
+            # No memory features - use standard generation
+            if memory_features is not None:
+                logger.warning("Memory features provided but memory_to_visual_proj not available")
+
+            outputs = self.llava_model.generate(
+                inputs=input_ids,
+                images=image_features,  # Pass processed image features
+                **filtered_kwargs
+            )
 
         return outputs
 

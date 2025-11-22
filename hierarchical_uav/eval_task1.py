@@ -564,30 +564,42 @@ def run_luav_eval(
                 logger.error(f"Sample {i}: image_tensor is None, skipping")
                 continue
 
-            # Generate answer (unified path for stability)
-            # Note: Memory features are currently not injected due to LLaVA architecture constraints
-            # They serve as validation that H-UAV has processed this query
+            # Generate answer with optional memory augmentation
             with torch.no_grad():
-                if memory_value is not None:
-                    if i % 10 == 0:  # Log every 10 samples to reduce verbosity
-                        logger.info(f"Sample {i}: Using H-UAV validated path")
-                else:
-                    if i % 10 == 0:
-                        logger.info(f"Sample {i}: Using local processing path")
-
-                # Use standard LLaVA generation for all cases
-                # This avoids potential issues with the generate_with_memory wrapper
-                # Note: LLaVA's generate() expects 'inputs' not 'input_ids'
                 # Use autocast for 8-bit models to handle dtype mismatches
                 with torch.cuda.amp.autocast(enabled=config.load_8bit, dtype=torch.float16):
-                    output_ids = luav_model.llava_model.generate(
-                        inputs=input_ids,  # Changed from input_ids= to inputs=
-                        images=image_tensor,
-                        max_new_tokens=512,
-                        min_new_tokens=1,  # Force at least 1 token generation
-                        do_sample=False,  # Use greedy decoding for stability with 8-bit
-                        num_beams=1
-                    )
+                    if memory_value is not None:
+                        # H-UAV memory available - use memory-augmented generation
+                        if i % 10 == 0:  # Log every 10 samples to reduce verbosity
+                            logger.info(f"Sample {i}: Using H-UAV memory-augmented inference")
+
+                        # Convert memory_value to the correct device and dtype
+                        memory_value = memory_value.to(config.device).float()
+
+                        # Call generate_with_memory to inject H-UAV memory features
+                        output_ids = luav_model.generate_with_memory(
+                            input_ids=input_ids,
+                            images=image_tensor,
+                            memory_features=memory_value,
+                            memory_weight=0.5,  # Balance between image and memory
+                            max_new_tokens=512,
+                            min_new_tokens=1,
+                            do_sample=False,
+                            num_beams=1
+                        )
+                    else:
+                        # No H-UAV memory - use standard generation
+                        if i % 10 == 0:
+                            logger.info(f"Sample {i}: Using local inference without H-UAV memory")
+
+                        output_ids = luav_model.llava_model.generate(
+                            inputs=input_ids,
+                            images=image_tensor,
+                            max_new_tokens=512,
+                            min_new_tokens=1,
+                            do_sample=False,
+                            num_beams=1
+                        )
 
             # Decode answer
             # Note: LLaVA generate() may return only generated tokens (not input+output)
