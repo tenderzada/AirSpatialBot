@@ -223,7 +223,18 @@ class LLaVAWithMAC(nn.Module):
             image_features = None
             memory_metrics = {}
 
-        # Forward through LLaVA WITHOUT gradients (frozen model, saves memory)
+        # During test-time learning (update_memory=True), we only need MAC updates
+        # Skip expensive LLaVA text generation to save 8GB+ of memory
+        if update_memory:
+            # Return dummy output with memory metrics
+            # Training only needs the metrics, not the actual text generation
+            return {
+                'logits': None,
+                'loss': None,  # No text generation loss during test-time learning
+                'memory_metrics': memory_metrics
+            }
+
+        # Normal inference: Forward through LLaVA WITHOUT gradients (frozen model)
         with torch.no_grad():
             outputs = self.llava_model(
                 input_ids=input_ids,
