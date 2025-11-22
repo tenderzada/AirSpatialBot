@@ -65,15 +65,21 @@ def test_dtype_fix():
         print("   ✗ MAC layer not found")
         return False
 
-    # Create dummy input
+    # Create dummy input (proper way using image processor)
     print("\n3. Creating test input...")
-    batch_size = 1
-    image = torch.randn(batch_size, 3, 336, 336).to(config.device)
+    # Create a dummy PIL image instead of random tensor
+    from PIL import Image as PILImage
+    dummy_image = PILImage.new('RGB', (336, 336), color='red')
+
+    # Process image properly
+    image_tensor = model.image_processor.preprocess(dummy_image, return_tensors='pt')['pixel_values']
+    image_tensor = image_tensor.to(config.device)
+    print(f"   - Input image tensor shape: {image_tensor.shape}")
 
     # Check vision tower output dtype (should be float16 for 8-bit models)
     print("\n4. Checking vision tower output dtype...")
     with torch.no_grad():
-        vision_features = model.llava_model.get_model().get_vision_tower()(image)
+        vision_features = model.llava_model.get_model().get_vision_tower()(image_tensor)
         vision_dtype = vision_features.dtype
         print(f"   - Vision features dtype: {vision_dtype}")
         if vision_dtype == torch.float16:
@@ -91,7 +97,7 @@ def test_dtype_fix():
             input_ids = model.tokenizer("Test question", return_tensors='pt')['input_ids'].to(config.device)
             outputs = model(
                 input_ids=input_ids,
-                images=image,
+                images=image_tensor,  # Use properly processed image tensor
                 update_memory=True  # Enable memory update like in training
             )
         print("   ✓ Forward pass successful - no dtype errors!")
