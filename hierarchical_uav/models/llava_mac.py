@@ -192,8 +192,11 @@ class LLaVAWithMAC(nn.Module):
 
         # Get image features
         if images is not None:
-            image_features = self.llava_model.get_model().get_vision_tower()(images)
-            image_features = self.llava_model.get_model().mm_projector(image_features)
+            # Extract image features WITHOUT gradients (saves memory)
+            # LLaVA vision tower and mm_projector are frozen (8-bit), don't need gradients
+            with torch.no_grad():
+                image_features = self.llava_model.get_model().get_vision_tower()(images)
+                image_features = self.llava_model.get_model().mm_projector(image_features)
 
             # Apply MAC layer to enhance features
             if hasattr(self, 'mac_layer'):
@@ -201,6 +204,11 @@ class LLaVAWithMAC(nn.Module):
                 # MAC layer uses float32 for stability in test-time learning
                 original_dtype = image_features.dtype
                 image_features_float = image_features.float()
+
+                # Detach from LLaVA computation graph, then enable gradients for MAC only
+                # This allows MAC to update while saving memory (no gradients for frozen LLaVA)
+                if update_memory:
+                    image_features_float = image_features_float.detach().requires_grad_(True)
 
                 image_features_float, memory_metrics = self.mac_layer(
                     image_features_float,
@@ -215,13 +223,14 @@ class LLaVAWithMAC(nn.Module):
             image_features = None
             memory_metrics = {}
 
-        # Forward through LLaVA
-        outputs = self.llava_model(
-            input_ids=input_ids,
-            images=image_features if image_features is not None else images,
-            labels=labels,
-            **kwargs
-        )
+        # Forward through LLaVA WITHOUT gradients (frozen model, saves memory)
+        with torch.no_grad():
+            outputs = self.llava_model(
+                input_ids=input_ids,
+                images=image_features if image_features is not None else images,
+                labels=labels,
+                **kwargs
+            )
 
         # Return outputs with memory metrics
         return {
