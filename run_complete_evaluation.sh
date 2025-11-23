@@ -77,29 +77,53 @@ HUAV_PID=$!
 echo "H-UAV server PID: $HUAV_PID"
 echo $HUAV_PID > h_uav.pid
 
-# Wait for H-UAV to start
-echo "Waiting for H-UAV to initialize..."
-sleep 15
+# Wait for H-UAV to start (loading 8-bit model + MAC takes time)
+echo "Waiting for H-UAV to initialize (this may take 30-60 seconds)..."
+sleep 20
 
-# Check if H-UAV is running
+# Check if H-UAV process is still running
 if ! kill -0 $HUAV_PID 2>/dev/null; then
-    echo -e "${RED}✗ H-UAV failed to start!${NC}"
-    echo "Check h_uav_server.log for errors"
+    echo -e "${RED}✗ H-UAV process died during startup!${NC}"
+    echo "Check h_uav_server.log for errors:"
+    tail -20 h_uav_server.log
     exit 1
 fi
 
-# Check if port is open
-if ! nc -z localhost 50051 2>/dev/null; then
-    echo -e "${YELLOW}⚠ Warning: Port 50051 not responding yet${NC}"
-    echo "Waiting a bit longer..."
-    sleep 10
-fi
+# Wait for port to open (check every 5 seconds for up to 60 seconds)
+echo "Waiting for H-UAV server to start listening on port 50051..."
+MAX_WAIT=60
+ELAPSED=0
+while [ $ELAPSED -lt $MAX_WAIT ]; do
+    if nc -z localhost 50051 2>/dev/null; then
+        echo -e "${GREEN}✓ H-UAV server is running and accepting connections${NC}"
+        break
+    fi
 
-if nc -z localhost 50051 2>/dev/null; then
-    echo -e "${GREEN}✓ H-UAV server is running and accepting connections${NC}"
-else
-    echo -e "${RED}✗ H-UAV server is not responding on port 50051${NC}"
-    echo "Check h_uav_server.log for details"
+    # Check if process is still alive
+    if ! kill -0 $HUAV_PID 2>/dev/null; then
+        echo -e "${RED}✗ H-UAV process died!${NC}"
+        echo "Last 30 lines of h_uav_server.log:"
+        tail -30 h_uav_server.log
+        exit 1
+    fi
+
+    sleep 5
+    ELAPSED=$((ELAPSED + 5))
+    echo "  Still waiting... (${ELAPSED}s/${MAX_WAIT}s)"
+done
+
+# Final check
+if ! nc -z localhost 50051 2>/dev/null; then
+    echo -e "${RED}✗ H-UAV server did not start within ${MAX_WAIT} seconds${NC}"
+    echo ""
+    echo "Last 30 lines of h_uav_server.log:"
+    tail -30 h_uav_server.log
+    echo ""
+    echo "The server process is still running (PID: $HUAV_PID)."
+    echo "You can:"
+    echo "  1. Wait longer and check: nc -z localhost 50051"
+    echo "  2. Monitor the log: tail -f h_uav_server.log"
+    echo "  3. Kill the process: kill $HUAV_PID"
     kill $HUAV_PID 2>/dev/null || true
     exit 1
 fi
