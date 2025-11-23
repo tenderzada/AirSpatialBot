@@ -380,13 +380,16 @@ def save_checkpoint(model, path, epoch, stats):
     """Save model checkpoint."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
 
-    # Save MAC state
+    # Save MAC state (format must match load_mac_state in llava_mac.py)
     if hasattr(model, 'mac_layer'):
         checkpoint = {
             'epoch': epoch,
             'mac_state': model.mac_layer.state_dict(),
-            'neural_memory_state': model.mac_layer.neural_memory.state_dict(),
-            'persistent_memory_state': model.mac_layer.persistent_memory.state_dict(),
+            'neural_memory': model.mac_layer.neural_memory.state_dict(),  # Fixed: was 'neural_memory_state'
+            'persistent_memory': model.mac_layer.persistent_memory.state_dict(),  # Fixed: was 'persistent_memory_state'
+            'cache': model.mac_layer.neural_memory.episodic_cache,
+            'surprise': model.mac_layer.neural_memory.surprise,
+            'step_count': model.mac_layer.neural_memory.step_count,
             'stats': stats
         }
         torch.save(checkpoint, path)
