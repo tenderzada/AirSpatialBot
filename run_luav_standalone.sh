@@ -39,7 +39,7 @@ echo ""
 python hierarchical_uav/eval_task1.py \
     --uav_type l-uav \
     --device cuda:1 \
-    --huav_address $HUAV_ADDRESS \
+    --standalone \
     --threshold $THRESHOLD \
     --force-query-rate $FORCE_QUERY_RATE \
     --model_path $MODEL_PATH \

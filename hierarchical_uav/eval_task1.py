@@ -335,7 +335,8 @@ def run_huav_eval(
 def run_luav_eval(
     config: UAVConfig,
     test_data: List[Dict],
-    output_path: str
+    output_path: str,
+    standalone: bool = False
 ):
     """
     Run L-UAV evaluation with client mode.
@@ -344,21 +345,30 @@ def run_luav_eval(
         config: L-UAV configuration
         test_data: List of test samples
         output_path: Path to save results
+        standalone: If True, run in standalone mode without H-UAV connection
     """
     print("=" * 60)
-    print("Starting L-UAV Evaluation")
+    if standalone:
+        print("Starting L-UAV Evaluation (Standalone Mode)")
+        print("No H-UAV memory augmentation - baseline performance")
+    else:
+        print("Starting L-UAV Evaluation")
     print("=" * 60)
 
-    # Test H-UAV connection
-    print(f"\nConnecting to H-UAV at {config.huav_address}...")
-    client = LUAVClient(huav_address=config.huav_address)
+    # Test H-UAV connection (skip in standalone mode)
+    client = None
+    if not standalone:
+        print(f"\nConnecting to H-UAV at {config.huav_address}...")
+        client = LUAVClient(huav_address=config.huav_address)
 
-    if not client.ping_huav():
-        print(f"✗ Cannot connect to H-UAV at {config.huav_address}")
-        print(f"  Please ensure H-UAV server is running first!")
-        return
+        if not client.ping_huav():
+            print(f"✗ Cannot connect to H-UAV at {config.huav_address}")
+            print(f"  Please ensure H-UAV server is running first!")
+            return
 
-    print(f"✓ H-UAV server is reachable")
+        print(f"✓ H-UAV server is reachable")
+    else:
+        print(f"\n✓ Running in standalone mode (H-UAV connection disabled)")
 
     # Load L-UAV model
     print(f"\nLoading L-UAV model on {config.device}...")
@@ -563,8 +573,8 @@ def run_luav_eval(
             # Decision: query H-UAV or proceed locally
             memory_value = None
             cache_hit = False
-            if should_query[0].item():
-                # Query H-UAV for memory augmentation
+            if should_query[0].item() and client is not None:
+                # Query H-UAV for memory augmentation (only if not in standalone mode)
                 try:
                     value, cache_hit = client.query_huav(query[0])
                     if value is not None:
@@ -581,7 +591,7 @@ def run_luav_eval(
                     source = "local_fallback"
                     local_count += 1
             else:
-                # Proceed locally without H-UAV memory
+                # Proceed locally without H-UAV memory (or in standalone mode)
                 source = "local"
                 local_count += 1
 
@@ -855,6 +865,13 @@ def main():
              'For research: bypass KB lookup for X%% of samples to test memory mechanism. '
              'Example: 0.3 = force 30%% of samples to query H-UAV'
     )
+    parser.add_argument(
+        '--standalone',
+        action='store_true',
+        help='Run L-UAV in standalone mode (no H-UAV connection). '
+             'Uses only local inference and knowledge base. '
+             'Useful for baseline performance evaluation.'
+    )
 
     # Data configuration
     parser.add_argument(
@@ -938,11 +955,14 @@ def main():
         config.force_query_rate = args.force_query_rate
 
         # Log research mode settings
-        if args.force_query_rate > 0:
+        if args.standalone:
+            print(f"\n⚠️  STANDALONE MODE: No H-UAV connection")
+            print(f"   → All samples use local inference and knowledge base only\n")
+        elif args.force_query_rate > 0:
             print(f"\n⚠️  RESEARCH MODE: Force query rate = {args.force_query_rate*100:.1f}%")
             print(f"   → {args.force_query_rate*100:.1f}% of samples will bypass KB and test H-UAV memory\n")
 
-        run_luav_eval(config, test_data, args.output)
+        run_luav_eval(config, test_data, args.output, standalone=args.standalone)
 
 
 if __name__ == "__main__":
