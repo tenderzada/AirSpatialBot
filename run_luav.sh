@@ -16,6 +16,14 @@ OUTPUT_DIR="./outputs/hierarchical_uav"
 HUAV_ADDRESS="localhost:50051"
 THRESHOLD=0.7
 
+# Research Mode: Force Query Rate (0.0-1.0)
+# Set to > 0 to force a percentage of samples to query H-UAV (bypass KB)
+# Examples:
+#   0.0 = normal mode (only query when self-matching triggers)
+#   0.2 = force 20% of samples to test memory mechanism
+#   0.3 = force 30% of samples to test memory mechanism
+FORCE_QUERY_RATE=0.0
+
 # Create output directory
 mkdir -p $OUTPUT_DIR
 
@@ -26,6 +34,7 @@ echo "  Vision Tower: $VISION_TOWER"
 echo "  Device: cuda:1"
 echo "  H-UAV Address: $HUAV_ADDRESS"
 echo "  Self-matching Threshold: $THRESHOLD"
+echo "  Force Query Rate: $FORCE_QUERY_RATE"
 echo "  Output: $OUTPUT_DIR/task1_l-uav_results.jsonl"
 echo ""
 
@@ -55,6 +64,7 @@ python hierarchical_uav/eval_task1.py \
     --device cuda:1 \
     --huav_address $HUAV_ADDRESS \
     --threshold $THRESHOLD \
+    --force-query-rate $FORCE_QUERY_RATE \
     --model_path $MODEL_PATH \
     --vision_tower $VISION_TOWER \
     --test_data $TEST_DATA \

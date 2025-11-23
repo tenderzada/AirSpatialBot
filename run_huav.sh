@@ -15,6 +15,11 @@ IMAGE_DIR="/mnt/data/AirSpatial/images"
 OUTPUT_DIR="./outputs/hierarchical_uav"
 PORT=50051
 
+# Load trained memory (optional)
+# Set LOAD_MEMORY environment variable to load trained MAC memory
+# Example: LOAD_MEMORY=./outputs/huav_training/huav_memory_final.pt ./run_huav.sh
+LOAD_MEMORY=${LOAD_MEMORY:-""}
+
 # Create output directory
 mkdir -p $OUTPUT_DIR
 
@@ -24,10 +29,18 @@ echo "  Model: $MODEL_PATH"
 echo "  Vision Tower: $VISION_TOWER"
 echo "  Device: cuda:0"
 echo "  Port: $PORT"
+if [ -n "$LOAD_MEMORY" ]; then
+    echo "  Trained Memory: $LOAD_MEMORY"
+fi
 echo "  Output: $OUTPUT_DIR/task1_h-uav_results.jsonl"
 echo ""
 
 # Run H-UAV
+LOAD_MEMORY_ARG=""
+if [ -n "$LOAD_MEMORY" ]; then
+    LOAD_MEMORY_ARG="--load-memory $LOAD_MEMORY"
+fi
+
 python hierarchical_uav/eval_task1.py \
     --uav_type h-uav \
     --device cuda:0 \
@@ -37,6 +50,7 @@ python hierarchical_uav/eval_task1.py \
     --test_data $TEST_DATA \
     --image_dir $IMAGE_DIR \
     --load_8bit \
+    $LOAD_MEMORY_ARG \
     --output $OUTPUT_DIR/task1_h-uav_results.jsonl
 
 echo ""
