@@ -836,6 +836,235 @@ def run_luav_eval(
         print(f"  Score: {result['self_match_score']:.4f}")
 
 
+def run_huav_standalone_eval(
+    config: UAVConfig,
+    test_data: List[Dict],
+    output_path: str
+):
+    """
+    Run H-UAV standalone evaluation (direct inference, no server).
+
+    This evaluates H-UAV's direct inference performance with trained MAC memory,
+    without using the client-server architecture.
+
+    Args:
+        config: H-UAV configuration
+        test_data: List of test samples
+        output_path: Path to save results
+    """
+    print("=" * 60)
+    print("Starting H-UAV Standalone Evaluation")
+    print("Direct inference with trained MAC memory")
+    print("=" * 60)
+
+    # Load H-UAV model
+    print(f"\nLoading H-UAV model on {config.device}...")
+    huav_model = LLaVAWithMAC(config)
+    print("✓ H-UAV model loaded")
+
+    # Load trained memory if specified
+    if hasattr(config, 'load_memory') and config.load_memory:
+        print(f"\nLoading trained MAC memory from {config.load_memory}...")
+        huav_model.load_mac_state(config.load_memory)
+        print("✓ Trained memory loaded - H-UAV ready with learned representations")
+    else:
+        print("\n⚠ No trained memory specified, using random initialization")
+
+    # Initialize vehicle knowledge base
+    knowledge_base = VehicleKnowledgeBase()
+    csv_files = [
+        "csv_file/output-19-add.csv",
+        "csv_file/output-20-add.csv",
+        "csv_file/output-40-add.csv",
+        "csv_file/output-42-add.csv",
+        "csv_file/output-43-add.csv",
+        "csv_file/output-44-add.csv",
+        "csv_file/output-45-add.csv",
+        "csv_file/output-46-add.csv",
+        "csv_file/output-47-add.csv",
+        "csv_file/output-48-add.csv",
+        "csv_file/output-49-add.csv"
+    ]
+    knowledge_base.load_csv(csv_files)
+    print(f"✓ Knowledge base loaded")
+
+    # Process test data
+    results = []
+    kb_count = 0
+    vlm_count = 0
+
+    print(f"\nProcessing {len(test_data)} test samples...")
+    for i, sample in enumerate(tqdm(test_data)):
+        try:
+            question = sample['question']
+            image_id = sample['image_id']
+            qtype = get_question_type(question)
+
+            # Parse bounding boxes
+            bbox_2d = parse_bbox_from_question(question)
+            bbox_3d = parse_bbox_3d(sample)
+
+            # Try knowledge base first (like L-UAV standalone)
+            kb_answer = None
+            if knowledge_base.df is not None and bbox_2d is not None:
+                kb_result = knowledge_base.query_by_image_bbox(image_id, bbox_2d)
+                if kb_result and qtype in kb_result and kb_result[qtype]:
+                    kb_answer = str(kb_result[qtype])
+                    if kb_answer and kb_answer != 'nan' and kb_answer != '':
+                        results.append({
+                            'question_id': sample.get('question_id', i),
+                            'image_id': image_id,
+                            'question': question,
+                            'answer': kb_answer,
+                            'ground_truth': sample.get('gt', sample.get('answer', '')),
+                            'qtype': qtype,
+                            'source': 'knowledge_base'
+                        })
+                        kb_count += 1
+                        continue
+
+            # Fallback to H-UAV VLM inference
+            image_path = os.path.join(config.image_dir, image_id) if hasattr(config, 'image_dir') else None
+
+            if image_path and os.path.exists(image_path):
+                image = Image.open(image_path).convert('RGB')
+
+                # Crop to bbox region
+                if bbox_2d is not None:
+                    image = crop_image_by_bbox(image, bbox_2d, padding=0.15)
+
+                image_tensor = huav_model.image_processor.preprocess(image, return_tensors='pt')['pixel_values']
+                image_tensor = image_tensor.to(config.device)
+
+                # For 8-bit models, ensure dtype compatibility
+                vision_tower = huav_model.llava_model.get_model().get_vision_tower()
+                if hasattr(vision_tower, 'dtype'):
+                    image_tensor = image_tensor.to(dtype=vision_tower.dtype)
+
+                # Prepare question prompt
+                from llava.conversation import conv_templates
+                from llava.constants import DEFAULT_IMAGE_TOKEN
+
+                question_clean = re.sub(r'<bbox>.*?</bbox>', '', question).strip()
+
+                # Create focused prompt based on question type
+                if qtype == 'color':
+                    prompt_question = "What is the color of this car in the image? Answer with just the color name."
+                elif qtype == 'type':
+                    prompt_question = "What type/class is this car (e.g., sedan, SUV, hatchback)? Answer briefly."
+                elif qtype == 'brand':
+                    prompt_question = "What brand/make is this car? Answer with just the brand name."
+                elif qtype == 'model':
+                    prompt_question = "What model is this car? Answer with just the model name."
+                else:
+                    prompt_question = question_clean if question_clean else question
+
+                question_with_image = f"{DEFAULT_IMAGE_TOKEN}\n{prompt_question}"
+
+                conv = conv_templates["vicuna_v1"].copy()
+                conv.append_message(conv.roles[0], question_with_image)
+                conv.append_message(conv.roles[1], None)
+                prompt = conv.get_prompt()
+
+                # Tokenize
+                input_ids = huav_model.tokenizer(prompt, return_tensors='pt')['input_ids'].to(config.device)
+
+                # Generate with H-UAV (uses MAC memory)
+                with torch.no_grad():
+                    with torch.cuda.amp.autocast(enabled=config.load_8bit, dtype=torch.float16):
+                        output_ids = huav_model.llava_model.generate(
+                            inputs=input_ids,
+                            images=image_tensor,
+                            max_new_tokens=512,
+                            min_new_tokens=1,
+                            do_sample=False,
+                            num_beams=1
+                        )
+
+                # Decode answer
+                if output_ids.shape[1] <= input_ids.shape[1]:
+                    answer = huav_model.tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
+                else:
+                    answer = huav_model.tokenizer.decode(output_ids[0, input_ids.shape[1]:], skip_special_tokens=True).strip()
+
+                gt = sample.get('gt', sample.get('answer', ''))
+                results.append({
+                    'question_id': sample.get('question_id', i),
+                    'image_id': image_id,
+                    'question': question,
+                    'answer': answer,
+                    'ground_truth': str(gt),
+                    'qtype': qtype,
+                    'source': 'huav_vlm'
+                })
+                vlm_count += 1
+            else:
+                if i == 0 or (i % 100 == 0):
+                    print(f"\nWarning: Image not found at {image_path}, skipping")
+                continue
+
+        except Exception as e:
+            import traceback
+            print(f"\nError processing sample {i}: {e}")
+            print(f"Traceback: {traceback.format_exc()}")
+            continue
+
+    # Save results
+    print(f"\nSaving results to {output_path}...")
+    with open(output_path, 'w') as f:
+        for result in results:
+            f.write(json.dumps(result) + '\n')
+    print(f"✓ Saved {len(results)} results")
+
+    # Print statistics
+    print(f"\n" + "=" * 60)
+    print("H-UAV Standalone Evaluation Results")
+    print("=" * 60)
+    print(f"Total samples: {len(results)}")
+    print(f"Knowledge base: {kb_count} ({kb_count/len(results)*100:.1f}%)")
+    print(f"H-UAV VLM: {vlm_count} ({vlm_count/len(results)*100:.1f}%)")
+
+    # Accuracy evaluation
+    correct = 0
+    total = len(results)
+    correct_by_type = {}
+    total_by_type = {}
+    correct_by_source = {'knowledge_base': 0, 'huav_vlm': 0}
+    total_by_source = {'knowledge_base': 0, 'huav_vlm': 0}
+
+    for r in results:
+        gt = str(r.get('ground_truth', '')).lower().strip()
+        answer = str(r.get('answer', '')).lower().strip()
+        qtype = r.get('qtype', 'unknown')
+        source = r.get('source', 'unknown')
+
+        total_by_type[qtype] = total_by_type.get(qtype, 0) + 1
+        if source in total_by_source:
+            total_by_source[source] += 1
+
+        is_correct = gt in answer if gt else False
+        if is_correct:
+            correct += 1
+            correct_by_type[qtype] = correct_by_type.get(qtype, 0) + 1
+            if source in correct_by_source:
+                correct_by_source[source] += 1
+
+    print(f"\nOverall Accuracy: {correct}/{total} = {correct/total*100:.2f}%")
+
+    print(f"\nAccuracy by Question Type:")
+    for qtype in sorted(total_by_type.keys()):
+        type_correct = correct_by_type.get(qtype, 0)
+        type_total = total_by_type[qtype]
+        print(f"  {qtype:12s}: {type_correct:3d}/{type_total:3d} = {type_correct/type_total*100:5.1f}%")
+
+    print(f"\nAccuracy by Source:")
+    for source in ['knowledge_base', 'huav_vlm']:
+        if total_by_source[source] > 0:
+            src_correct = correct_by_source[source]
+            src_total = total_by_source[source]
+            print(f"  {source:15s}: {src_correct:3d}/{src_total:3d} = {src_correct/src_total*100:5.1f}%")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Hierarchical UAV Task 1 Evaluation")
 
@@ -936,7 +1165,13 @@ def main():
         config.image_dir = args.image_dir
         config.load_memory = args.load_memory  # Path to trained memory checkpoint
 
-        run_huav_eval(config, test_data, args.output)
+        # Check if standalone mode requested
+        if args.standalone:
+            print(f"\n⚠️  H-UAV STANDALONE MODE: Direct inference evaluation")
+            print(f"   → Not starting server, running direct evaluation\n")
+            run_huav_standalone_eval(config, test_data, args.output)
+        else:
+            run_huav_eval(config, test_data, args.output)
 
     else:  # l-uav
         config = UAVConfig.create_luav_config(
