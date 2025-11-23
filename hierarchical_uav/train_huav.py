@@ -432,7 +432,7 @@ def main():
     # MAC configuration
     parser.add_argument('--memory_dim', type=int, default=4096)
     parser.add_argument('--num_persistent_tokens', type=int, default=64)
-    parser.add_argument('--num_memory_tokens', type=int, default=128)
+    parser.add_argument('--num_memory_tokens', type=int, default=32)  # Reduced from 128 to save memory
     parser.add_argument('--learning_theta', type=float, default=0.1,
                        help='Learning rate for memory update')
     parser.add_argument('--surprise_eta', type=float, default=0.9,
