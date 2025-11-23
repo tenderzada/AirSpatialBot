@@ -103,7 +103,7 @@ def calculate_accuracy(predictions: List[Dict], ground_truth: List[Dict]) -> Dic
             continue
 
         total += 1
-        pred_answer = normalize_answer(pred.get('text', pred.get('answer', '')))
+        pred_answer = normalize_answer(pred.get('answer', pred.get('text', '')))
         gt_answer = normalize_answer(extract_ground_truth_answer(gt_map[question_id]))
 
         answer_distribution[pred_answer[:50]] += 1  # Track first 50 chars
@@ -161,19 +161,22 @@ def analyze_memory_usage(luav_results: List[Dict]) -> Dict:
     for result in luav_results:
         stats['total_samples'] += 1
 
-        # Check if memory was used
-        if result.get('used_memory', False):
+        # Check if memory was used (check both 'source' field and 'used_memory' flag)
+        source = result.get('source', '')
+        if source == 'h_uav_memory' or result.get('used_memory', False):
             stats['used_memory'] += 1
             stats['memory_triggered_samples'].append({
                 'question_id': result.get('question_id'),
-                'self_matching': result.get('self_matching_score', 0.0),
-                'answer': result.get('text', '')[:100]
+                'self_matching': result.get('self_match_score', result.get('self_matching_score', 0.0)),
+                'answer': result.get('answer', result.get('text', ''))[:100]
             })
         else:
             stats['used_local'] += 1
 
-        # Track self-matching scores
-        if 'self_matching_score' in result:
+        # Track self-matching scores (check both field names)
+        if 'self_match_score' in result:
+            self_matching_scores.append(result['self_match_score'])
+        elif 'self_matching_score' in result:
             self_matching_scores.append(result['self_matching_score'])
 
     if self_matching_scores:
