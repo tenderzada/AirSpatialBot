@@ -51,6 +51,28 @@ def extract_bbox_answer(answer: str) -> str:
     return answer
 
 
+def extract_ground_truth_answer(gt_item: Dict) -> str:
+    """Extract ground truth answer from various possible formats."""
+    # Try conversations format (LLaVA style)
+    conversations = gt_item.get('conversations', [])
+    if len(conversations) >= 2:
+        return conversations[1].get('value', '')
+
+    # Try direct answer field
+    if 'answer' in gt_item:
+        return gt_item['answer']
+
+    # Try text field
+    if 'text' in gt_item:
+        return gt_item['text']
+
+    # Try output field
+    if 'output' in gt_item:
+        return gt_item['output']
+
+    return ''
+
+
 def calculate_accuracy(predictions: List[Dict], ground_truth: List[Dict]) -> Dict:
     """Calculate accuracy metrics."""
 
@@ -78,7 +100,7 @@ def calculate_accuracy(predictions: List[Dict], ground_truth: List[Dict]) -> Dic
 
         total += 1
         pred_answer = normalize_answer(pred.get('text', pred.get('answer', '')))
-        gt_answer = normalize_answer(gt_map[question_id].get('conversations', [{}])[1].get('value', ''))
+        gt_answer = normalize_answer(extract_ground_truth_answer(gt_map[question_id]))
 
         answer_distribution[pred_answer[:50]] += 1  # Track first 50 chars
 
