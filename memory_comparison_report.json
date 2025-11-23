@@ -1,0 +1,34 @@
+{
+  "untrained_mac": {
+    "total": 971,
+    "correct": 22,
+    "accuracy": 0.02265705458290422,
+    "memory_used": 0,
+    "memory_correct": 0,
+    "memory_accuracy": 0.0,
+    "local_only": 971,
+    "local_correct": 22,
+    "local_accuracy": 0.02265705458290422,
+    "answer_diversity": 199,
+    "diversity_rate": 0.20494335736354274
+  },
+  "trained_mac": {
+    "total": 971,
+    "correct": 25,
+    "accuracy": 0.025746652935118436,
+    "memory_used": 0,
+    "memory_correct": 0,
+    "memory_accuracy": 0.0,
+    "local_only": 971,
+    "local_correct": 25,
+    "local_accuracy": 0.025746652935118436,
+    "answer_diversity": 205,
+    "diversity_rate": 0.21112255406797117
+  },
+  "improvements": {
+    "overall_accuracy": 0.3089598352214215,
+    "memory_accuracy": 0.0,
+    "local_accuracy": 0.3089598352214215,
+    "answer_diversity": 0.617919670442843
+  }
+}

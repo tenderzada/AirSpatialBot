@@ -22,7 +22,7 @@ THRESHOLD=1.0  # Set to 1.0 to force all samples to query H-UAV (bypass self-mat
 #   0.0 = normal mode (only query when self-matching triggers)
 #   0.2 = force 20% of samples to test memory mechanism
 #   0.3 = force 30% of samples to test memory mechanism
-FORCE_QUERY_RATE=0.0
+FORCE_QUERY_RATE=0.3
 
 # Create output directory
 mkdir -p $OUTPUT_DIR
