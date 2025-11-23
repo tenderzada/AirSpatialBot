@@ -158,7 +158,7 @@ def analyze_memory_usage(luav_results: List[Dict]) -> Dict:
     return stats
 
 
-def print_comparison(luav_metrics: Dict, huav_metrics: Dict, memory_stats: Dict):
+def print_comparison(luav_metrics: Dict, huav_metrics: Dict = None, memory_stats: Dict = None):
     """Print comparison report."""
 
     print("\n" + "=" * 80)
@@ -167,19 +167,28 @@ def print_comparison(luav_metrics: Dict, huav_metrics: Dict, memory_stats: Dict)
 
     print("\n📊 OVERALL PERFORMANCE:")
     print("-" * 80)
-    print(f"{'Metric':<30} {'L-UAV':<20} {'H-UAV':<20}")
-    print("-" * 80)
-    print(f"{'Total Samples':<30} {luav_metrics['total']:<20} {huav_metrics['total']:<20}")
-    print(f"{'Exact Match Accuracy':<30} {luav_metrics['accuracy']:<20.2%} {huav_metrics['accuracy']:<20.2%}")
-    print(f"{'Partial Match Accuracy':<30} {luav_metrics['partial_accuracy']:<20.2%} {huav_metrics['partial_accuracy']:<20.2%}")
-    print(f"{'Unique Answers':<30} {luav_metrics['unique_answers']:<20} {huav_metrics['unique_answers']:<20}")
+    if huav_metrics:
+        print(f"{'Metric':<30} {'L-UAV':<20} {'H-UAV':<20}")
+        print("-" * 80)
+        print(f"{'Total Samples':<30} {luav_metrics['total']:<20} {huav_metrics['total']:<20}")
+        print(f"{'Exact Match Accuracy':<30} {luav_metrics['accuracy']:<20.2%} {huav_metrics['accuracy']:<20.2%}")
+        print(f"{'Partial Match Accuracy':<30} {luav_metrics['partial_accuracy']:<20.2%} {huav_metrics['partial_accuracy']:<20.2%}")
+        print(f"{'Unique Answers':<30} {luav_metrics['unique_answers']:<20} {huav_metrics['unique_answers']:<20}")
+    else:
+        print(f"{'Metric':<30} {'L-UAV':<20}")
+        print("-" * 80)
+        print(f"{'Total Samples':<30} {luav_metrics['total']:<20}")
+        print(f"{'Exact Match Accuracy':<30} {luav_metrics['accuracy']:<20.2%}")
+        print(f"{'Partial Match Accuracy':<30} {luav_metrics['partial_accuracy']:<20.2%}")
+        print(f"{'Unique Answers':<30} {luav_metrics['unique_answers']:<20}")
 
-    print("\n🧠 MEMORY USAGE ANALYSIS (L-UAV):")
-    print("-" * 80)
-    print(f"  Total samples: {memory_stats['total_samples']}")
-    print(f"  Used H-UAV memory: {memory_stats['used_memory']} ({memory_stats['memory_usage_rate']:.1%})")
-    print(f"  Used local KB: {memory_stats['used_local']} ({(1-memory_stats['memory_usage_rate']):.1%})")
-    print(f"  Avg self-matching score: {memory_stats['avg_self_matching_score']:.3f}")
+    if memory_stats:
+        print("\n🧠 MEMORY USAGE ANALYSIS (L-UAV):")
+        print("-" * 80)
+        print(f"  Total samples: {memory_stats['total_samples']}")
+        print(f"  Used H-UAV memory: {memory_stats['used_memory']} ({memory_stats['memory_usage_rate']:.1%})")
+        print(f"  Used local KB: {memory_stats['used_local']} ({(1-memory_stats['memory_usage_rate']):.1%})")
+        print(f"  Avg self-matching score: {memory_stats['avg_self_matching_score']:.3f}")
 
     print("\n📈 ACCURACY BREAKDOWN:")
     print("-" * 80)
@@ -188,10 +197,11 @@ def print_comparison(luav_metrics: Dict, huav_metrics: Dict, memory_stats: Dict)
     print(f"  ≈ Partial: {luav_metrics['partial_correct']} ({luav_metrics['partial_correct']/luav_metrics['total']:.2%})")
     print(f"  ✗ Wrong: {luav_metrics['total'] - luav_metrics['correct'] - luav_metrics['partial_correct']}")
 
-    print(f"\nH-UAV:")
-    print(f"  ✓ Correct: {huav_metrics['correct']} ({huav_metrics['accuracy']:.2%})")
-    print(f"  ≈ Partial: {huav_metrics['partial_correct']} ({huav_metrics['partial_correct']/huav_metrics['total']:.2%})")
-    print(f"  ✗ Wrong: {huav_metrics['total'] - huav_metrics['correct'] - huav_metrics['partial_correct']}")
+    if huav_metrics:
+        print(f"\nH-UAV:")
+        print(f"  ✓ Correct: {huav_metrics['correct']} ({huav_metrics['accuracy']:.2%})")
+        print(f"  ≈ Partial: {huav_metrics['partial_correct']} ({huav_metrics['partial_correct']/huav_metrics['total']:.2%})")
+        print(f"  ✗ Wrong: {huav_metrics['total'] - huav_metrics['correct'] - huav_metrics['partial_correct']}")
 
     print("\n🎯 KEY INSIGHTS:")
     print("-" * 80)
@@ -204,7 +214,7 @@ def print_comparison(luav_metrics: Dict, huav_metrics: Dict, memory_stats: Dict)
     print(f"  Current L-UAV accuracy (trained MAC): {luav_metrics['accuracy']:.2%}")
     print(f"  Improvement: {improvement:+.1%} ({improvement*100:.0f}x better)" if improvement > 0 else f"  Change: {improvement:.1%}")
 
-    if memory_stats['used_memory'] > 0:
+    if memory_stats and memory_stats['used_memory'] > 0:
         memory_samples = [s for s in luav_metrics['error_analysis']['correct_match']
                          if any(ms['question_id'] == s['question_id']
                                for ms in memory_stats['memory_triggered_samples'])]
@@ -218,7 +228,7 @@ def print_comparison(luav_metrics: Dict, huav_metrics: Dict, memory_stats: Dict)
 def main():
     parser = argparse.ArgumentParser(description='Analyze UAV evaluation results')
     parser.add_argument('--luav-results', type=str, required=True, help='L-UAV results JSONL file')
-    parser.add_argument('--huav-results', type=str, required=True, help='H-UAV results JSONL file')
+    parser.add_argument('--huav-results', type=str, help='H-UAV results JSONL file (optional)')
     parser.add_argument('--ground-truth', type=str, required=True, help='Ground truth JSONL file')
     parser.add_argument('--output-report', type=str, help='Output report JSON file')
 
@@ -227,17 +237,24 @@ def main():
     # Load data
     print("Loading results...")
     luav_results = load_jsonl(args.luav_results)
-    huav_results = load_jsonl(args.huav_results)
     ground_truth = load_jsonl(args.ground_truth)
 
     print(f"  L-UAV: {len(luav_results)} results")
-    print(f"  H-UAV: {len(huav_results)} results")
+
+    # Load H-UAV results if provided
+    huav_results = None
+    huav_metrics = None
+    if args.huav_results:
+        huav_results = load_jsonl(args.huav_results)
+        print(f"  H-UAV: {len(huav_results)} results")
+
     print(f"  Ground truth: {len(ground_truth)} samples")
 
     # Calculate metrics
     print("\nCalculating metrics...")
     luav_metrics = calculate_accuracy(luav_results, ground_truth)
-    huav_metrics = calculate_accuracy(huav_results, ground_truth)
+    if huav_results:
+        huav_metrics = calculate_accuracy(huav_results, ground_truth)
     memory_stats = analyze_memory_usage(luav_results)
 
     # Print comparison
