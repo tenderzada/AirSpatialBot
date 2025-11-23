@@ -14,7 +14,7 @@ TEST_DATA="/mnt/data/AirSpatial/airspatial_agent_test_task1.jsonl"
 IMAGE_DIR="/mnt/data/AirSpatial/images"
 OUTPUT_DIR="./outputs/hierarchical_uav"
 HUAV_ADDRESS="localhost:50051"
-THRESHOLD=0.7
+THRESHOLD=1.0  # Set to 1.0 to force all samples to query H-UAV (bypass self-matching)
 
 # Research Mode: Force Query Rate (0.0-1.0)
 # Set to > 0 to force a percentage of samples to query H-UAV (bypass KB)
