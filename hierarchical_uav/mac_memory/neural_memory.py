@@ -75,7 +75,7 @@ class NeuralMemory(nn.Module):
             'values': [],    # List of value tensors
             'timestamps': [] # List of timestamps
         }
-        self.cache_size = 1000  # Maximum cache size
+        self.cache_size = 500  # Maximum cache size (reduced from 1000 to save memory)
 
     def forward(self, query: torch.Tensor) -> torch.Tensor:
         """

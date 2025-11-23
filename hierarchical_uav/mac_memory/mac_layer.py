@@ -28,7 +28,7 @@ class MACConfig:
     memory_dim: int = 4096
     memory_depth: int = 2
     num_persistent_tokens: int = 64
-    num_memory_tokens: int = 128
+    num_memory_tokens: int = 32  # Reduced from 128 to save memory (8.5GB -> 2.5GB)
 
     # Segment processing
     segment_size: int = 512  # Process input in segments

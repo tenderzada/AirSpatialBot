@@ -36,7 +36,7 @@ class UAVConfig:
     memory_dim: int = 4096
     memory_depth: int = 2
     num_persistent_tokens: int = 64
-    num_memory_tokens: int = 128
+    num_memory_tokens: int = 32  # Reduced from 128 to save memory (8.5GB -> 2.5GB)
 
     # Learning configuration (H-UAV only)
     enable_memory_update: bool = True
