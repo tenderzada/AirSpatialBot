@@ -121,6 +121,11 @@ class LLaVAWithMAC(nn.Module):
         # This enhances the vision-language connector with memory
         self.mac_layer = MACLayer(mac_config)
 
+        # CRITICAL: Ensure MAC layer uses float32 for numerical stability
+        # This is essential for test-time learning, especially with 8-bit models
+        # Float32 provides precise gradients for surprise-driven updates
+        self.mac_layer = self.mac_layer.float()
+
         # Register as a module
         self.add_module('mac_layer', self.mac_layer)
 
@@ -130,6 +135,8 @@ class LLaVAWithMAC(nn.Module):
             self.config.memory_dim,
             self.llava_model.config.hidden_size
         )
+        # Also ensure projection layer is float32
+        self.memory_to_visual_proj = self.memory_to_visual_proj.float()
         self.add_module('memory_to_visual_proj', self.memory_to_visual_proj)
 
     def _configure_huav(self):
@@ -185,28 +192,56 @@ class LLaVAWithMAC(nn.Module):
 
         # Get image features
         if images is not None:
-            image_features = self.llava_model.get_model().get_vision_tower()(images)
-            image_features = self.llava_model.get_model().mm_projector(image_features)
+            # Extract image features WITHOUT gradients (saves memory)
+            # LLaVA vision tower and mm_projector are frozen (8-bit), don't need gradients
+            with torch.no_grad():
+                image_features = self.llava_model.get_model().get_vision_tower()(images)
+                image_features = self.llava_model.get_model().mm_projector(image_features)
 
             # Apply MAC layer to enhance features
             if hasattr(self, 'mac_layer'):
-                image_features, memory_metrics = self.mac_layer(
-                    image_features,
+                # Ensure dtype consistency for MAC layer
+                # MAC layer uses float32 for stability in test-time learning
+                original_dtype = image_features.dtype
+                image_features_float = image_features.float()
+
+                # Detach from LLaVA computation graph, then enable gradients for MAC only
+                # This allows MAC to update while saving memory (no gradients for frozen LLaVA)
+                if update_memory:
+                    image_features_float = image_features_float.detach().requires_grad_(True)
+
+                image_features_float, memory_metrics = self.mac_layer(
+                    image_features_float,
                     update_memory=update_memory
                 )
+
+                # Convert back to original dtype for LLaVA
+                image_features = image_features_float.to(original_dtype)
             else:
                 memory_metrics = {}
         else:
             image_features = None
             memory_metrics = {}
 
-        # Forward through LLaVA
-        outputs = self.llava_model(
-            input_ids=input_ids,
-            images=image_features if image_features is not None else images,
-            labels=labels,
-            **kwargs
-        )
+        # During test-time learning (update_memory=True), we only need MAC updates
+        # Skip expensive LLaVA text generation to save 8GB+ of memory
+        if update_memory:
+            # Return dummy output with memory metrics
+            # Training only needs the metrics, not the actual text generation
+            return {
+                'logits': None,
+                'loss': None,  # No text generation loss during test-time learning
+                'memory_metrics': memory_metrics
+            }
+
+        # Normal inference: Forward through LLaVA WITHOUT gradients (frozen model)
+        with torch.no_grad():
+            outputs = self.llava_model(
+                input_ids=input_ids,
+                images=image_features if image_features is not None else images,
+                labels=labels,
+                **kwargs
+            )
 
         # Return outputs with memory metrics
         return {
@@ -239,10 +274,17 @@ class LLaVAWithMAC(nn.Module):
             image_features = self.llava_model.get_model().get_vision_tower()(images)
             image_features = self.llava_model.get_model().mm_projector(image_features)
 
-            image_features, _ = self.mac_layer(
-                image_features,
+            # Ensure dtype consistency for MAC layer
+            original_dtype = image_features.dtype
+            image_features_float = image_features.float()
+
+            image_features_float, _ = self.mac_layer(
+                image_features_float,
                 update_memory=False  # Don't update during generation
             )
+
+            # Convert back to original dtype
+            image_features = image_features_float.to(original_dtype)
 
             # Generate using enhanced features
             outputs = self.llava_model.generate(
@@ -279,7 +321,8 @@ class LLaVAWithMAC(nn.Module):
             1. Extract image features from vision encoder + mm_projector
             2. Project memory_features to visual token space
             3. Concatenate: [image_features || memory_tokens]
-            4. Pass augmented features to LLaVA generation
+            4. Pass augmented features (3D tensor) to LLaVA's generate
+               LLaVA will recognize it as pre-encoded features and skip encoding
 
         Args:
             input_ids: [batch_size, seq_len] token IDs
@@ -339,23 +382,120 @@ class LLaVAWithMAC(nn.Module):
             logger.debug(f"Memory augmented features shape: {augmented_features.shape}")
             logger.debug(f"Memory injection: added {memory_tokens.shape[1]} memory tokens with weight {memory_weight}")
 
-            # Generate using augmented features
-            outputs = self.llava_model.generate(
-                inputs=input_ids,
-                images=augmented_features,  # Pass augmented features instead of raw images
-                **filtered_kwargs
-            )
+            # Use augmented features for generation
+            final_image_features = augmented_features
 
         else:
-            # No memory features - use standard generation
+            # No memory features - use standard image features
             if memory_features is not None:
                 logger.warning("Memory features provided but memory_to_visual_proj not available")
 
-            outputs = self.llava_model.generate(
-                inputs=input_ids,
-                images=image_features,  # Pass processed image features
-                **filtered_kwargs
-            )
+            final_image_features = image_features
+
+        # CRITICAL FIX: Manually construct inputs_embeds to bypass LLaVA's image encoding
+        #
+        # Problem: LLaVA's generate() and prepare_inputs_labels_for_multimodal() both
+        #          call encode_images(), causing double encoding of pre-computed features
+        # Solution: Manually construct inputs_embeds by inserting image features into text embeddings
+        #           then call the underlying language model's generate
+
+        logger.debug(f"Manually preparing inputs with pre-encoded features of shape: {final_image_features.shape}")
+
+        # Get the underlying language model
+        llama_model = self.llava_model.get_model()
+
+        # Get text embeddings
+        input_embeds = llama_model.embed_tokens(input_ids)
+
+        # Find IMAGE_TOKEN_INDEX (usually -200)
+        IMAGE_TOKEN_INDEX = -200
+        if hasattr(self.llava_model.config, 'image_token_index'):
+            IMAGE_TOKEN_INDEX = self.llava_model.config.image_token_index
+
+        # Locate image token positions in input_ids
+        batch_size = input_ids.shape[0]
+        image_token_mask = input_ids == IMAGE_TOKEN_INDEX
+
+        # Manually insert image features into the embedding sequence
+        new_input_embeds = []
+        new_attention_masks = []
+
+        for b in range(batch_size):
+            mask = image_token_mask[b]
+
+            if mask.sum() == 0:
+                # No image token found - use text embeddings as-is
+                new_input_embeds.append(input_embeds[b])
+                new_attention_masks.append(torch.ones(input_embeds[b].shape[0], device=input_embeds.device))
+                continue
+
+            # Find the position of the image token
+            image_token_pos = mask.argmax()
+
+            # Split text embeddings: before and after image token
+            text_before = input_embeds[b, :image_token_pos, :]
+            text_after = input_embeds[b, image_token_pos + 1:, :]
+
+            # Concatenate: [text_before || image_features || text_after]
+            combined_embeds = torch.cat([
+                text_before,
+                final_image_features[b],  # Insert image features (with memory augmentation)
+                text_after
+            ], dim=0)
+
+            new_input_embeds.append(combined_embeds)
+            new_attention_masks.append(torch.ones(combined_embeds.shape[0], device=combined_embeds.device))
+
+        # Pad sequences to same length for batch processing
+        max_len = max(e.shape[0] for e in new_input_embeds)
+
+        padded_embeds = []
+        padded_masks = []
+
+        for embeds, mask in zip(new_input_embeds, new_attention_masks):
+            pad_len = max_len - embeds.shape[0]
+
+            if pad_len > 0:
+                # Pad embeddings with zeros
+                padding = torch.zeros(
+                    (pad_len, embeds.shape[1]),
+                    dtype=embeds.dtype,
+                    device=embeds.device
+                )
+                padded_embeds.append(torch.cat([embeds, padding], dim=0))
+
+                # Extend attention mask (0 for padding)
+                padded_mask = torch.cat([
+                    mask,
+                    torch.zeros(pad_len, device=mask.device)
+                ])
+                padded_masks.append(padded_mask)
+            else:
+                padded_embeds.append(embeds)
+                padded_masks.append(mask)
+
+        # Stack into batch tensors
+        final_inputs_embeds = torch.stack(padded_embeds, dim=0)  # [batch, max_len, hidden_size]
+        final_attention_mask = torch.stack(padded_masks, dim=0).long()  # [batch, max_len]
+
+        logger.debug(f"Final inputs_embeds shape: {final_inputs_embeds.shape}")
+        logger.debug(f"Final attention_mask shape: {final_attention_mask.shape}")
+
+        # Call generate using transformers' GenerationMixin to bypass LLaVA's inputs_embeds restriction
+        # LLaVA's generate() raises NotImplementedError for inputs_embeds
+        # But the underlying transformers GenerationMixin supports it
+        # We directly call the parent class's generate method
+
+        from transformers.generation.utils import GenerationMixin
+
+        # Call GenerationMixin.generate directly, bypassing LLaVA's override
+        # self.llava_model is LlavaLlamaForCausalLM which inherits from GenerationMixin
+        outputs = GenerationMixin.generate(
+            self.llava_model,
+            inputs_embeds=final_inputs_embeds,
+            attention_mask=final_attention_mask,
+            **filtered_kwargs
+        )
 
         return outputs
 
