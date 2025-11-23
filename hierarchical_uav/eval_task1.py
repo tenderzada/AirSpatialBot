@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from hierarchical_uav.models import LLaVAWithMAC, UAVConfig, UAVType
 from hierarchical_uav.communication import HUAVServer, LUAVClient, SelfMatchingModule
+from hierarchical_uav.dynamic_memory_weight import DynamicMemoryWeightAdjuster
 from PIL import Image
 import numpy as np
 import pandas as pd
@@ -281,6 +282,12 @@ def run_huav_eval(
     huav_model = LLaVAWithMAC(config)
     print("✓ H-UAV model loaded")
 
+    # Load trained memory if specified
+    if hasattr(config, 'load_memory') and config.load_memory:
+        print(f"\nLoading trained MAC memory from {config.load_memory}...")
+        huav_model.load_mac_state(config.load_memory)
+        print("✓ Trained memory loaded - H-UAV ready with learned representations")
+
     # Start server
     server = HUAVServer(
         huav_model=huav_model,
@@ -365,6 +372,16 @@ def run_luav_eval(
     ).to(config.device)
     print(f"✓ Self-matching module initialized (threshold={config.self_match_threshold})")
 
+    # Initialize dynamic memory weight adjuster (Phase 1 optimization)
+    weight_adjuster = DynamicMemoryWeightAdjuster(
+        base_weight=0.5,
+        min_weight=0.1,
+        max_weight=0.9
+    )
+    print(f"✓ Dynamic memory weight adjuster initialized")
+    print(f"  Strategy: Adaptive weighting based on self-match scores")
+    print(f"  Range: [{weight_adjuster.min_weight}, {weight_adjuster.max_weight}]")
+
     # Initialize vehicle knowledge base (like main_task1.py)
     knowledge_base = VehicleKnowledgeBase()
     csv_files = [
@@ -393,6 +410,7 @@ def run_luav_eval(
     results = []
     local_count = 0
     remote_count = 0
+    forced_query_count = 0  # Track samples forced to query H-UAV
 
     for i, sample in enumerate(tqdm(test_data, desc="L-UAV Evaluation")):
         try:
@@ -430,11 +448,19 @@ def run_luav_eval(
             # Determine question type
             qtype = get_question_type(question)
 
+            # === Research Mode: Force Query Rate ===
+            # Randomly force some samples to query H-UAV for testing memory mechanism
+            import random
+            force_query_huav = random.random() < config.force_query_rate
+            if force_query_huav:
+                forced_query_count += 1
+
             # === Strategy: Use knowledge base for brand/model/price/type/powertrain ===
             # Use VLM for color (requires visual understanding)
             kb_answer = None
-            if knowledge_base.df is not None and bbox_2d is not None:
+            if knowledge_base.df is not None and bbox_2d is not None and not force_query_huav:
                 # Try to get answer from knowledge base (like main_task1.py)
+                # Skip KB lookup if forced to query H-UAV (for research)
                 kb_result = knowledge_base.query_by_image_bbox(image_id, bbox_2d)
                 if kb_result and qtype in kb_result and kb_result[qtype]:
                     kb_answer = str(kb_result[qtype])
@@ -570,18 +596,36 @@ def run_luav_eval(
                 with torch.cuda.amp.autocast(enabled=config.load_8bit, dtype=torch.float16):
                     if memory_value is not None:
                         # H-UAV memory available - use memory-augmented generation
-                        if i % 10 == 0:  # Log every 10 samples to reduce verbosity
-                            logger.info(f"Sample {i}: Using H-UAV memory-augmented inference")
 
                         # Convert memory_value to the correct device and dtype
                         memory_value = memory_value.to(config.device).float()
+
+                        # PHASE 1 OPTIMIZATION: Dynamic memory weight based on self-match score
+                        # Compute adaptive weight instead of using fixed 0.5
+                        weight_result = weight_adjuster.compute_weight(
+                            self_match_score=score[0].item(),
+                            huav_confidence=None,  # TODO: Can be added from H-UAV response
+                            luav_confidence=None   # TODO: Can be extracted from L-UAV logits
+                        )
+                        memory_weight = weight_result['weight']
+
+                        # Log decision for analysis
+                        if i % 10 == 0:  # Log every 10 samples to reduce verbosity
+                            decision_summary = weight_adjuster.get_decision_summary(memory_weight)
+                            logger.info(
+                                f"Sample {i}: Using H-UAV memory-augmented inference\n"
+                                f"  Self-match score: {score[0].item():.4f}\n"
+                                f"  Memory weight: {memory_weight:.4f}\n"
+                                f"  Strategy: {weight_result['strategy']}\n"
+                                f"  Decision: {decision_summary}"
+                            )
 
                         # Call generate_with_memory to inject H-UAV memory features
                         output_ids = luav_model.generate_with_memory(
                             input_ids=input_ids,
                             images=image_tensor,
                             memory_features=memory_value,
-                            memory_weight=0.5,  # Balance between image and memory
+                            memory_weight=memory_weight,  # ADAPTIVE WEIGHT (was fixed 0.5)
                             max_new_tokens=512,
                             min_new_tokens=1,
                             do_sample=False,
@@ -675,6 +719,12 @@ def run_luav_eval(
     print(f"Total samples: {len(results)}")
     print(f"Local decisions: {local_count} ({local_count/len(results)*100:.1f}%)")
     print(f"Remote queries: {remote_count} ({remote_count/len(results)*100:.1f}%)")
+    if forced_query_count > 0:
+        print(f"  ↳ Forced queries (research mode): {forced_query_count} ({forced_query_count/len(results)*100:.1f}%)")
+        natural_query_count = remote_count - forced_query_count
+        if natural_query_count < 0:
+            natural_query_count = 0
+        print(f"  ↳ Natural queries (self-matching): {natural_query_count} ({natural_query_count/len(results)*100:.1f}%)")
 
     # Cache statistics
     cache_hits = sum(1 for r in results if r.get('cache_hit', False))
@@ -682,6 +732,19 @@ def run_luav_eval(
     print(f"\nCache statistics:")
     print(f"  Total cache hits: {cache_hits}")
     print(f"  Cache hit rate: {cache_hit_rate:.2%}")
+
+    # Dynamic memory weight statistics (Phase 1 optimization)
+    print(f"\n" + "=" * 60)
+    print("Dynamic Memory Weight Statistics (Phase 1)")
+    print("=" * 60)
+    print(f"Strategy: Adaptive weighting based on self-match scores")
+    print(f"Weight range: [{weight_adjuster.min_weight}, {weight_adjuster.max_weight}]")
+    print(f"\nExpected behavior:")
+    print(f"  • High self-match (>0.7) → Higher weight (0.6-0.8)")
+    print(f"  • Medium self-match (0.5-0.7) → Moderate weight (0.3-0.6)")
+    print(f"  • Low self-match (<0.5) → Low weight (0.1-0.3)")
+    print(f"\nNote: With current untrained self-matching, most scores will be ~0.5")
+    print(f"      After Phase 3 (training), scores will become more discriminative")
 
     # === Accuracy Evaluation (like main_task1.py) ===
     print(f"\n" + "=" * 60)
@@ -784,6 +847,14 @@ def main():
     parser.add_argument('--port', type=int, default=50051, help='Server port (H-UAV)')
     parser.add_argument('--huav_address', type=str, default='localhost:50051', help='H-UAV address (L-UAV)')
     parser.add_argument('--threshold', type=float, default=0.7, help='Self-matching threshold (L-UAV)')
+    parser.add_argument(
+        '--force-query-rate',
+        type=float,
+        default=0.0,
+        help='Force this percentage of samples to query H-UAV (0.0-1.0). '
+             'For research: bypass KB lookup for X%% of samples to test memory mechanism. '
+             'Example: 0.3 = force 30%% of samples to query H-UAV'
+    )
 
     # Data configuration
     parser.add_argument(
@@ -809,6 +880,13 @@ def main():
     parser.add_argument('--memory_dim', type=int, default=4096)
     parser.add_argument('--num_persistent_tokens', type=int, default=64)
     parser.add_argument('--num_memory_tokens', type=int, default=128)
+    parser.add_argument(
+        '--load-memory',
+        type=str,
+        default=None,
+        help='Load trained MAC memory from checkpoint (H-UAV only). '
+             'Example: ./outputs/huav_training/huav_memory_final.pt'
+    )
 
     # Quantization options
     parser.add_argument('--load_8bit', action='store_true', help='Use 8-bit quantization to reduce memory')
@@ -839,6 +917,7 @@ def main():
         )
         config.huav_address = f"0.0.0.0:{args.port}"
         config.image_dir = args.image_dir
+        config.load_memory = args.load_memory  # Path to trained memory checkpoint
 
         run_huav_eval(config, test_data, args.output)
 
@@ -856,6 +935,12 @@ def main():
             load_4bit=args.load_4bit
         )
         config.image_dir = args.image_dir
+        config.force_query_rate = args.force_query_rate
+
+        # Log research mode settings
+        if args.force_query_rate > 0:
+            print(f"\n⚠️  RESEARCH MODE: Force query rate = {args.force_query_rate*100:.1f}%")
+            print(f"   → {args.force_query_rate*100:.1f}% of samples will bypass KB and test H-UAV memory\n")
 
         run_luav_eval(config, test_data, args.output)
 
