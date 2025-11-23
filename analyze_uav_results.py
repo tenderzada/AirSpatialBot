@@ -53,6 +53,10 @@ def extract_bbox_answer(answer: str) -> str:
 
 def extract_ground_truth_answer(gt_item: Dict) -> str:
     """Extract ground truth answer from various possible formats."""
+    # Try gt field (AirSpatial format)
+    if 'gt' in gt_item:
+        return gt_item['gt']
+
     # Try conversations format (LLaVA style)
     conversations = gt_item.get('conversations', [])
     if len(conversations) >= 2:
