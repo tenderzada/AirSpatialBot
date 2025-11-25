@@ -20,7 +20,9 @@ OUTPUT_DIR="./outputs/hierarchical_uav/sqa"
 # H-UAV Configuration
 HUAV_PORT=50051
 HUAV_DEVICE="cuda:0"
-HUAV_MEMORY_PATH="./outputs/huav_training/huav_memory_final.pt"  # Optional: trained memory
+# Memory path: Can be overridden by environment variable
+# For SQA: HUAV_MEMORY=./outputs/huav_training_sqa/huav_memory_final.pt ./run_sqa_evaluation.sh h-uav
+HUAV_MEMORY_PATH="${HUAV_MEMORY:-./outputs/huav_training_sqa/huav_memory_final.pt}"
 
 # L-UAV Configuration
 LUAV_DEVICE="cuda:1"
@@ -51,8 +53,11 @@ Options:
     --port P               Set H-UAV port (default: 50051)
 
 Examples:
-    # Start H-UAV server
+    # Start H-UAV server (with default SQA-trained memory)
     $0 h-uav
+
+    # Start H-UAV server with specific trained memory
+    HUAV_MEMORY=./outputs/huav_training_sqa/huav_memory_final.pt $0 h-uav
 
     # Start L-UAV client (in another terminal)
     $0 l-uav
