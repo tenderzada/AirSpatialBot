@@ -100,6 +100,53 @@ def parse_bbox_from_question(question: str) -> Optional[List[int]]:
     return None
 
 
+def parse_ground_truth(ground_truth, qtype: str) -> Optional[float]:
+    """
+    Parse ground truth value, handling different formats.
+
+    Args:
+        ground_truth: Ground truth value (can be float, int, or string)
+        qtype: Question type (depth, distance, length, width, height, size)
+
+    Returns:
+        Numeric ground truth value or None
+    """
+    # If already numeric, return it
+    if isinstance(ground_truth, (int, float)):
+        return float(ground_truth)
+
+    # Convert to string for parsing
+    gt_str = str(ground_truth)
+
+    # For 'size' type, handle format like '<size>4753,1832,1469</size>'
+    if qtype == 'size':
+        # Extract numbers from <size>...</size> format
+        match = re.search(r'<size>([\d.,\s]+)</size>', gt_str)
+        if match:
+            numbers_str = match.group(1)
+            # Split by comma and take first value (length)
+            numbers = re.findall(r'[\d.]+', numbers_str)
+            if numbers:
+                try:
+                    return float(numbers[0])
+                except ValueError:
+                    pass
+
+    # For other types or fallback, try direct conversion
+    try:
+        return float(gt_str)
+    except ValueError:
+        # Try to extract first numeric value
+        numbers = re.findall(r'[\d.]+', gt_str)
+        if numbers:
+            try:
+                return float(numbers[0])
+            except ValueError:
+                pass
+
+    return None
+
+
 def extract_numeric_answer(text: str, qtype: str) -> Optional[float]:
     """
     Extract numeric answer from model output.
@@ -572,6 +619,14 @@ def run_luav_eval(
             # Extract numeric value from answer
             predicted_value = extract_numeric_answer(answer_text, qtype)
 
+            # Parse ground truth value (handles various formats including <size>...</size>)
+            gt_value = parse_ground_truth(ground_truth, qtype)
+
+            # Skip if ground truth parsing failed
+            if gt_value is None:
+                logger.warning(f"Sample {i}: Could not parse ground_truth '{ground_truth}' for qtype '{qtype}', skipping")
+                continue
+
             # Record result
             results.append({
                 'question_id': question_id,
@@ -580,7 +635,7 @@ def run_luav_eval(
                 'qtype': qtype,
                 'answer_text': answer_text,
                 'predicted_value': predicted_value,
-                'ground_truth': float(ground_truth),
+                'ground_truth': gt_value,
                 'self_match_score': score[0].item(),
                 'source': source,
                 'cache_hit': cache_hit
