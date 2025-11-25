@@ -7,12 +7,12 @@ set -e  # Exit on error
 # ==================== Configuration ====================
 
 # Model paths
-MODEL_PATH="./models/AirSpatialBot"
+MODEL_PATH="/mnt/data/AirSpatialBot"
 VISION_TOWER="/mnt/data/clip-vit-large-patch14-336"
 
 # Data paths
-SQA_TEST_DATA="./data/metadata/airspatial_sqa_test.jsonl"
-IMAGE_DIR="./data/images"
+SQA_TEST_DATA="/mnt/data/AirSpatial/airspatial_sqa_test.jsonl"
+IMAGE_DIR="/mnt/data/AirSpatial/images"
 
 # Output directory
 OUTPUT_DIR="./outputs/hierarchical_uav/sqa"
