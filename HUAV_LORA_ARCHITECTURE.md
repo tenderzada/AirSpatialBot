@@ -1,506 +1,460 @@
-# H-UAV LoRA Memory Architecture
+# H-UAV LoRA Memory Architecture (正确版本)
 
 ## 架构概述
 
-**设计框架**：
+**正确的设计框架**：
 
 ```
-┌──────────────────────────────────────┐
-│ L-UAV (客户端 - 仅推理)                │
-│                                      │
-│ ┌─────────────────────────────────┐ │
-│ │ Base LLaVA Model                │ │
-│ │ ↓                               │ │
-│ │ Inference (image + question)    │ │
-│ │ ↓                               │ │
-│ │ Self-Matching Module            │ │
-│ │  ├─ QueryKeyGenerator           │ │
-│ │  ├─ Self-similarity score       │ │
-│ │  └─ Confidence evaluation       │ │
-│ └─────────────────────────────────┘ │
-│                                      │
-│  If confidence < threshold:          │
-│  └─ Send query to H-UAV ─────────┐  │
-└──────────────────────────────────│───┘
-                                   │
-                          (Network Request)
-                                   │
-┌──────────────────────────────────▼───┐
-│ H-UAV (服务器 - 记忆提供者)            │
-│                                      │
-│ ┌─────────────────────────────────┐ │
-│ │ LoRA-Only Memory Pool           │ │
-│ │  └─ Memory Weaver (MemGen)     │ │
-│ │     ├─ LoRA rank: 4-8          │ │
-│ │     ├─ Memory tokens: 8-16     │ │
-│ │     └─ Pre-trained weights     │ │
-│ └─────────────────────────────────┘ │
-│           ↓                          │
-│ ┌─────────────────────────────────┐ │
-│ │ Receive L-UAV Query             │ │
-│ │ ↓                               │ │
-│ │ Generate LoRA Memory            │ │
-│ │ ↓                               │ │
-│ │ Enhanced Inference              │ │
-│ │ ↓                               │ │
-│ │ Return Answer + Confidence      │ │
-│ └─────────────────────────────────┘ │
-│                                      │
-└──────────────────────────────────────┘
+┌────────────────────────────────────────────────────┐
+│ L-UAV (客户端 - 推理 + Self-Matching)               │
+│                                                    │
+│ Step 1: Base Inference                            │
+│   LLaVA(image, question) → answer, confidence     │
+│                                                    │
+│ Step 2: Self-Matching                             │
+│   if confidence >= threshold:                     │
+│       └─ Use answer ✓                             │
+│   else:                                           │
+│       └─ Request H-UAV for memory tokens          │
+│                                                    │
+│ Step 3: Request Memory from H-UAV                 │
+│   Send: {image, question}                         │
+│                 ↓                                  │
+└─────────────────┼──────────────────────────────────┘
+                  │ (HTTP POST /get_memory)
+                  ↓
+┌─────────────────┴──────────────────────────────────┐
+│ H-UAV (服务器 - 记忆提供者)                          │
+│                                                    │
+│ Step 1: Receive Request                           │
+│   Receive: {image, question}                      │
+│                                                    │
+│ Step 2: Encode Input                              │
+│   LLaVA encoder → hidden_states [1, 64, 4096]    │
+│                                                    │
+│ Step 3: Generate LoRA Memory                      │
+│   LoRA Memory Weaver:                             │
+│   ├─ Input: hidden_states [1, 64, 4096]          │
+│   ├─ LoRA generation (rank=4)                     │
+│   └─ Output: memory_tokens [1, 8, 4096]          │
+│                                                    │
+│ Step 4: Return Memory Tokens                      │
+│   ❌ NOT: answer                                  │
+│   ✅ YES: memory_tokens [8, 4096]                 │
+│                 ↓                                  │
+└─────────────────┼──────────────────────────────────┘
+                  │ (Return memory tokens)
+                  ↓
+┌─────────────────┴──────────────────────────────────┐
+│ L-UAV (继续推理)                                     │
+│                                                    │
+│ Step 4: Receive Memory Tokens                     │
+│   memory_tokens [8, 4096]                         │
+│                                                    │
+│ Step 5: Enhanced Inference                        │
+│   Concatenate: memory_tokens || input_tokens      │
+│   LLaVA with enhanced context → final_answer      │
+│                                                    │
+│ Step 6: Return to User                            │
+│   final_answer with H-UAV memory assistance       │
+│                                                    │
+└────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 核心设计理念
+## 关键理解
 
-### L-UAV 职责
-- ✅ **仅推理**：运行 base LLaVA 模型
-- ✅ **Self-Matching**：评估自身置信度
-- ✅ **请求协助**：当 confidence < threshold 时向 H-UAV 请求
-- ❌ **不部署记忆**：L-UAV 本身不包含记忆模块
+### ❌ 错误理解
+- H-UAV 生成并返回**答案**
+- L-UAV 直接使用 H-UAV 的答案
 
-### H-UAV 职责
-- ✅ **维护记忆池**：部署 LoRA-Only Memory
-- ✅ **服务请求**：接收 L-UAV 的查询
-- ✅ **记忆增强**：使用 LoRA 记忆辅助推理
-- ✅ **返回结果**：提供增强的答案和置信度
+### ✅ 正确理解
+- H-UAV **只生成并返回记忆 tokens**
+- L-UAV 使用这些 tokens **增强自己的推理**
+- **L-UAV 自己生成最终答案**
 
 ---
 
-## LoRA-Only Memory 设计
+## 数据流
 
-### 为什么选择 LoRA-Only（而非 MAC）？
+### Request: L-UAV → H-UAV
 
-| Aspect | MAC Memory | LoRA-Only Memory | 理由 |
-|--------|------------|------------------|------|
-| **存储方式** | Explicit neural memory DB | Implicit LoRA weights | LoRA 更轻量 |
-| **更新机制** | Test-time learning | Pre-training | H-UAV 可预训练 |
-| **参数量** | 50M (~200 MB) | 0.36M (~1.4 MB) | LoRA 99% 更小 |
-| **推理速度** | 2-20 ms (检索+更新) | 0.3 ms (生成) | LoRA 10-60× 更快 |
-| **部署** | 需同步 memory state | 静态权重 | LoRA 更简单 |
-| **适用场景** | 持续学习 | 静态记忆服务 | H-UAV 服务器适合静态 |
-
-**结论**：H-UAV 作为中心化服务器，**不需要在线学习**（可离线训练），LoRA 的静态记忆特性非常适合。
-
----
-
-## H-UAV LoRA 服务器组件
-
-### 1. LoRA Memory Pool
-
-```python
-from hierarchical_uav.mac_memory import LoRAMemoryLayer, LoRAMemoryConfig
-
-# H-UAV 配置
-config = LoRAMemoryConfig(
-    hidden_size=4096,
-    num_memory_tokens=8,       # 适中的记忆容量
-    lora_rank=4,               # 轻量级
-    lora_alpha=8.0,
-    enable_trigger=False,      # H-UAV 总是提供记忆
-    pool_method='mean'
-)
-
-lora_layer = LoRAMemoryLayer(config)
-
-# 加载预训练权重
-lora_layer.load_lora_weights('./lora_weights.pt')
-lora_layer.freeze_for_inference()
-```
-
-**特点**：
-- 预训练的 LoRA 权重（静态）
-- 不需要 test-time 更新
-- 快速推理（0.3 ms/query）
-
-### 2. 服务器接口
-
-**HTTP API** (推荐，更简单):
-```python
-# hierarchical_uav/huav_lora_server.py
-
-# Endpoint: POST /infer
+```json
 {
-    "image": "base64_encoded_image",
-    "question": "What is the depth?",
-    "bbox_3d": [x, y, z, l, w, h, theta]  # optional
-}
-
-# Response:
-{
-    "answer": "5.2 meters",
-    "confidence": 0.85,
-    "memory_used": true,
-    "inference_time_ms": 12.3
+    "image": "base64_encoded_image_string",
+    "question": "What is the depth of this object?",
+    "bbox_3d": [0.5, 0.5, 0.0, 0.2, 0.2, 0.1, 0.0]
 }
 ```
 
-**Socket-based** (现有实现):
+### Response: H-UAV → L-UAV
+
+```json
+{
+    "memory_tokens": [
+        [0.123, -0.456, 0.789, ...],  # Token 1: 4096 dims
+        [0.234, -0.567, 0.890, ...],  # Token 2: 4096 dims
+        ...                           # 8 tokens total
+        [0.345, -0.678, 0.901, ...]   # Token 8: 4096 dims
+    ],
+    "memory_shape": [8, 4096],
+    "memory_generated": true,
+    "inference_time_ms": 12.3,
+    "request_id": 42
+}
+```
+
+**关键**：
+- ❌ 没有 `answer` 字段
+- ✅ 只有 `memory_tokens` 字段
+- L-UAV 拿到这些 tokens 后，自己完成推理
+
+---
+
+## API 端点
+
+### H-UAV Server Endpoints
+
+#### 1. `POST /get_memory` (主要端点)
+
+**用途**：生成并返回 LoRA 记忆 tokens
+
+**Request**:
 ```python
-# hierarchical_uav/communication/grpc_server.py
-# 接收 query vector，返回 memory value
+import requests
+import base64
+
+response = requests.post('http://h-uav:8000/get_memory', json={
+    'image': base64_image,
+    'question': 'What is the depth?'
+})
 ```
 
-### 3. 工作流程
-
-```
-1. L-UAV 推理
-   ├─ Self-matching score = 0.45 (< 0.5)
-   └─ 决定请求 H-UAV
-
-2. L-UAV → H-UAV
-   ├─ 发送: image + question + bbox_3d
-   └─ (HTTP POST /infer)
-
-3. H-UAV 处理
-   ├─ 编码 image + question
-   ├─ 生成 LoRA memory tokens (8 tokens)
-   ├─ 增强推理 (LLaVA + memory)
-   └─ 生成答案
-
-4. H-UAV → L-UAV
-   ├─ 返回: answer + confidence
-   └─ L-UAV 使用增强结果
+**Response**:
+```python
+{
+    'memory_tokens': [[...], [...], ...],  # Shape: [8, 4096]
+    'memory_shape': [8, 4096],
+    'memory_generated': True,
+    'inference_time_ms': 12.3
+}
 ```
 
----
+#### 2. `GET /health`
 
-## H-UAV LoRA 训练
+**用途**：健康检查
 
-### 训练策略
-
-**离线预训练** (H-UAV 服务器部署前):
-
-```bash
-# 在服务器或 H-UAV 上预训练 LoRA 记忆
-./train_lora_only_sqa.sh
-
-# 输出: lora_weights_final.pt (~0.7 MB)
+**Response**:
+```json
+{
+    "status": "healthy",
+    "model": "H-UAV LoRA Server"
+}
 ```
 
-**训练过程**：
-1. 使用 SQA 数据集（17,526 samples）
-2. 训练 LoRA 适配器生成有效记忆
-3. 保存 LoRA 权重（静态）
-4. 部署到 H-UAV 服务器
+#### 3. `GET /stats`
 
-**不需要**：
-- ❌ Test-time learning
-- ❌ Surprise-driven updates
-- ❌ Online adaptation
+**用途**：服务器统计信息
 
-**原因**：H-UAV 作为服务器，可以**离线训练**一次，然后**静态服务**多个 L-UAV。
-
-### 定期更新策略
-
-```
-Week 1-4: H-UAV 使用 lora_v1.pt
-   ↓
-收集新数据 / 用户反馈
-   ↓
-Week 5: 离线重新训练
-   ├─ 使用新数据 + 旧数据
-   └─ 生成 lora_v2.pt
-   ↓
-Week 5-8: H-UAV 更新到 lora_v2.pt
-   └─ 热更新（无需停机）
+**Response**:
+```json
+{
+    "total_requests": 1234,
+    "avg_inference_time_ms": 11.8,
+    "lora_size_mb": 0.7,
+    "device": "cuda:0"
+}
 ```
 
 ---
 
-## 对比：MAC vs LoRA for H-UAV
+## L-UAV 使用示例
 
-### MAC Memory (不推荐用于 H-UAV)
-
-❌ **劣势**：
-- 需要 test-time learning（H-UAV 服务器不需要）
-- 200 MB memory state（过大）
-- 每次请求需要检索+更新（慢）
-- Memory state 难以版本管理
-
-✅ **优势**：
-- 可在线学习（但 H-UAV 不需要）
-
-### LoRA-Only Memory (推荐用于 H-UAV)
-
-✅ **优势**：
-- **静态权重**：预训练一次，持续服务
-- **轻量级**：0.7 MB（易于部署和版本管理）
-- **快速**：0.3 ms/query（服务多个 L-UAV）
-- **可维护**：离线重训，热更新
-- **可扩展**：多个 LoRA 权重对应不同任务
-
-⚠️ **劣势**：
-- 不能在线学习（但可定期离线更新）
-
----
-
-## 部署方案
-
-### 方案 1：单 H-UAV 服务器
-
-```
-        L-UAV-1 ──┐
-        L-UAV-2 ──┤
-        L-UAV-3 ──┼──> H-UAV Server (LoRA Memory Pool)
-        L-UAV-4 ──┤
-        L-UAV-5 ──┘
-
-H-UAV:
-  ├─ lora_weights.pt (0.7 MB)
-  ├─ HTTP Server :8000
-  └─ 处理所有 L-UAV 请求
-```
-
-### 方案 2：多任务 LoRA 池
-
-```
-H-UAV Server
-  ├─ lora_sqa.pt        (SQA 任务)
-  ├─ lora_vqa.pt        (VQA 任务)
-  ├─ lora_detection.pt  (检测任务)
-  └─ 根据 task_type 选择对应 LoRA
-
-L-UAV 请求:
-  {
-    "task_type": "sqa",  # 指定任务类型
-    "image": ...,
-    "question": ...
-  }
-```
-
-### 方案 3：分层 H-UAV
-
-```
-         L-UAV × 100
-              ↓
-        Edge H-UAV × 10 (区域服务器)
-         ├─ LoRA memory
-         └─ 处理本地 L-UAV
-              ↓
-        Central H-UAV (中心服务器)
-         ├─ 定期训练新 LoRA
-         └─ 分发到 Edge H-UAV
-```
-
----
-
-## 启动 H-UAV 服务器
-
-### 使用 HTTP 服务器（推荐）
-
-```bash
-python hierarchical_uav/huav_lora_server.py \
-    --model_path /mnt/data/AirSpatialBot \
-    --vision_tower /mnt/data/clip-vit-large-patch14-336 \
-    --lora_memory ./outputs/lora_only_sqa/lora_weights_final.pt \
-    --host 0.0.0.0 \
-    --port 8000 \
-    --device cuda:0
-```
-
-**输出**：
-```
-============================================================
-H-UAV LoRA Memory Server
-============================================================
-Host: 0.0.0.0
-Port: 8000
-Device: cuda:0
-LoRA weights: lora_weights_final.pt (0.7 MB)
-============================================================
-Endpoints:
-  Health: http://0.0.0.0:8000/health
-  Infer: http://0.0.0.0:8000/infer
-  Stats: http://0.0.0.0:8000/stats
-============================================================
-```
-
-### 使用 Socket 服务器（现有）
-
-```bash
-python hierarchical_uav/eval_task1.py \
-    --uav_type h-uav \
-    --device cuda:0 \
-    --lora_memory ./outputs/lora_only_sqa/lora_weights_final.pt
-```
-
----
-
-## L-UAV 请求示例
-
-### Python 客户端
+### Python 客户端代码
 
 ```python
 import requests
 import base64
+import torch
+import numpy as np
 from PIL import Image
-import io
 
-# 加载图像
-image = Image.open('test.jpg')
-buffered = io.BytesIO()
-image.save(buffered, format="JPEG")
-image_b64 = base64.b64encode(buffered.getvalue()).decode()
+class LUAVClient:
+    def __init__(self, huav_url='http://h-uav:8000'):
+        self.huav_url = huav_url
+        self.threshold = 0.5  # Self-matching threshold
 
-# 请求 H-UAV
-response = requests.post('http://h-uav-server:8000/infer', json={
-    'image': image_b64,
-    'question': 'What is the depth of this object?',
-    'bbox_3d': [0.5, 0.5, 0.0, 0.2, 0.2, 0.1, 0.0]
-})
+    def infer_with_huav_memory(self, image_path, question):
+        """
+        L-UAV inference with H-UAV memory assistance.
+        """
+        # Step 1: Base inference
+        image = Image.open(image_path)
+        base_answer, confidence = self.base_inference(image, question)
 
-result = response.json()
-print(f"Answer: {result['answer']}")
-print(f"Confidence: {result['confidence']}")
-print(f"Memory used: {result['memory_used']}")
+        # Step 2: Self-matching
+        if confidence >= self.threshold:
+            print(f"✓ High confidence ({confidence:.2f}), using base answer")
+            return base_answer
+
+        print(f"⚠ Low confidence ({confidence:.2f}), requesting H-UAV memory")
+
+        # Step 3: Request memory from H-UAV
+        memory_tokens = self.request_huav_memory(image, question)
+
+        # Step 4: Enhanced inference with memory
+        enhanced_answer = self.enhanced_inference(
+            image, question, memory_tokens
+        )
+
+        return enhanced_answer
+
+    def request_huav_memory(self, image, question):
+        """Request memory tokens from H-UAV."""
+        # Encode image
+        buffered = io.BytesIO()
+        image.save(buffered, format="JPEG")
+        image_b64 = base64.b64encode(buffered.getvalue()).decode()
+
+        # Request H-UAV
+        response = requests.post(f'{self.huav_url}/get_memory', json={
+            'image': image_b64,
+            'question': question
+        })
+
+        result = response.json()
+
+        # Parse memory tokens
+        memory_list = result['memory_tokens']  # List of lists
+        memory_tokens = torch.tensor(memory_list)  # [8, 4096]
+
+        print(f"✓ Received {memory_tokens.shape[0]} memory tokens from H-UAV")
+
+        return memory_tokens
+
+    def enhanced_inference(self, image, question, memory_tokens):
+        """
+        Enhanced inference using H-UAV memory tokens.
+
+        Args:
+            memory_tokens: [num_tokens, 4096] from H-UAV
+        """
+        # Encode input
+        input_hidden = self.encode_input(image, question)  # [seq_len, 4096]
+
+        # Concatenate memory tokens with input
+        # memory_tokens: [8, 4096]
+        # input_hidden: [64, 4096]
+        enhanced_hidden = torch.cat([
+            memory_tokens,      # [8, 4096] - from H-UAV
+            input_hidden        # [64, 4096] - from L-UAV
+        ], dim=0)  # [72, 4096]
+
+        # Generate with enhanced context
+        answer = self.llava_generate(enhanced_hidden)
+
+        return answer
+
+    def base_inference(self, image, question):
+        """Base L-UAV inference (without H-UAV memory)."""
+        # ... LLaVA inference ...
+        return answer, confidence
+
+    def encode_input(self, image, question):
+        """Encode image + question to hidden states."""
+        # ... LLaVA encoding ...
+        return hidden_states
+
+# Usage
+client = LUAVClient(huav_url='http://192.168.1.100:8000')
+answer = client.infer_with_huav_memory('test.jpg', 'What is the depth?')
+print(f"Final answer: {answer}")
 ```
 
 ---
 
-## 性能指标
+## 工作流程详解
 
-### H-UAV LoRA 服务器性能
-
-| Metric | Value | Note |
-|--------|-------|------|
-| **LoRA 权重大小** | 0.7 MB | rank=4, tokens=8 |
-| **单次推理延迟** | 15-30 ms | 含编码+生成+推理 |
-| **LoRA 生成开销** | 0.3 ms | <2% 总延迟 |
-| **内存占用** | 336 KB/request | 运行时 |
-| **并发能力** | 10-50 L-UAV | 取决于 GPU |
-| **吞吐量** | 30-60 req/s | 单 GPU |
-
-### 对比 MAC Memory 服务器
-
-| Metric | MAC | LoRA-Only | Winner |
-|--------|-----|-----------|--------|
-| Memory state | 200 MB | 0.7 MB | LoRA (285×) |
-| 单次推理 | 20-40 ms | 15-30 ms | LoRA (1.3×) |
-| 并发能力 | 5-20 | 10-50 | LoRA (2×) |
-| 版本管理 | 难 | 易 | LoRA |
-| 热更新 | 难 | 易 | LoRA |
-
----
-
-## 更新和维护
-
-### 1. 定期重训 LoRA
-
-```bash
-# 每周/每月重训一次
-./train_lora_only_sqa.sh
-
-# 输出新版本
-# outputs/lora_only_sqa_v2/lora_weights_final.pt
-```
-
-### 2. 热更新 H-UAV
-
-```bash
-# 方式 1: API 更新
-curl -X POST http://h-uav:8000/reload_lora \
-    -d '{"lora_path": "./lora_v2.pt"}'
-
-# 方式 2: 重启服务器
-kill -HUP <huav_pid>
-```
-
-### 3. A/B 测试
+### 完整流程
 
 ```
-H-UAV Instance A: lora_v1.pt (50% traffic)
-H-UAV Instance B: lora_v2.pt (50% traffic)
+1. L-UAV: 收到用户查询
+   ├─ Input: image.jpg + "What is the depth?"
+   └─ Start processing
 
-Compare performance → Deploy winner
+2. L-UAV: Base inference
+   ├─ Encode image + question
+   ├─ LLaVA generate
+   └─ Output: "5 meters" (confidence: 0.45)
+
+3. L-UAV: Self-matching
+   ├─ Confidence 0.45 < threshold 0.5
+   └─ Decision: Request H-UAV memory
+
+4. L-UAV → H-UAV: Request memory
+   ├─ POST /get_memory
+   └─ Payload: {image, question}
+
+5. H-UAV: Generate memory
+   ├─ Encode input → hidden [1, 64, 4096]
+   ├─ LoRA Memory Weaver
+   │   └─ Pool hidden → LoRA → memory_tokens [1, 8, 4096]
+   └─ Return memory_tokens to L-UAV
+
+6. H-UAV → L-UAV: Return memory
+   ├─ Response: {memory_tokens: [8, 4096]}
+   └─ Transfer: 8 × 4096 × 4 bytes = 128 KB
+
+7. L-UAV: Enhanced inference
+   ├─ Receive memory_tokens [8, 4096]
+   ├─ Concatenate: memory || input
+   ├─ Enhanced context: [72, 4096]
+   └─ LLaVA generate with memory
+
+8. L-UAV: Return final answer
+   └─ "5.2 meters" (with H-UAV memory assistance)
 ```
 
 ---
 
-## FAQ
+## 性能分析
 
-### Q1: 为什么 H-UAV 不用 MAC Memory？
+### 延迟分解
 
-**A**: H-UAV 是中心化服务器，不需要在线学习。LoRA 的**静态记忆**特性更适合：
-- 离线预训练一次
-- 持续服务多个 L-UAV
-- 轻量级（0.7 MB vs 200 MB）
-- 易于版本管理和更新
+| Step | Component | Latency | Location |
+|------|-----------|---------|----------|
+| 1 | L-UAV base inference | 30 ms | L-UAV |
+| 2 | L-UAV self-matching | 1 ms | L-UAV |
+| 3 | Network request | 2-10 ms | Network |
+| 4 | H-UAV encode input | 10 ms | H-UAV |
+| 5 | **H-UAV LoRA generation** | **0.3 ms** | H-UAV |
+| 6 | Network response | 2-10 ms | Network |
+| 7 | L-UAV enhanced inference | 35 ms | L-UAV |
+| **Total** | **End-to-end** | **80-96 ms** | - |
 
-### Q2: LoRA 不能在线学习，怎么处理新数据？
+**关键观察**：
+- H-UAV LoRA 生成仅 **0.3 ms**（极快）
+- 主要延迟来自网络传输（4-20 ms）和 L-UAV 推理（65 ms）
 
-**A**: 采用**定期离线重训**策略：
-- 收集 L-UAV 反馈数据
-- 每周/月离线重训 LoRA
-- 热更新部署新权重
+### 数据传输
 
-### Q3: 一个 H-UAV 能服务多少 L-UAV？
+| Item | Size | Direction |
+|------|------|-----------|
+| Request image (JPEG) | ~100 KB | L-UAV → H-UAV |
+| Request question | ~100 bytes | L-UAV → H-UAV |
+| **Response memory** | **128 KB** | **H-UAV → L-UAV** |
 
-**A**: 取决于：
-- GPU 性能：单 GPU 约 10-50 并发
-- 请求频率：如果 L-UAV 每 10s 请求一次，可服务 100-500 个 L-UAV
-- 可横向扩展：部署多个 H-UAV 实例
+**Memory tokens**: 8 tokens × 4096 dims × 4 bytes = **128 KB**
 
-### Q4: 能否支持多任务？
+相比传输完整答案（~100 bytes），传输 memory tokens 略大，但包含丰富的语义信息。
 
-**A**: 可以！部署多个 LoRA 权重：
-```python
-lora_pool = {
-    'sqa': LoRAMemoryLayer(...).load('lora_sqa.pt'),
-    'vqa': LoRAMemoryLayer(...).load('lora_vqa.pt'),
-    'det': LoRAMemoryLayer(...).load('lora_det.pt'),
-}
+---
 
-# 根据 task_type 选择
-lora_layer = lora_pool[request['task_type']]
+## 对比：Memory Tokens vs Answer
+
+### 方案 A：H-UAV 返回 Memory Tokens（当前）✅
+
+```
+L-UAV: base_inference() → answer_1 (confidence: 0.45)
+       ↓
+L-UAV → H-UAV: request_memory()
+       ↓
+H-UAV: generate_memory() → memory_tokens [8, 4096]
+       ↓
+L-UAV: enhanced_inference(memory_tokens) → answer_2
 ```
 
-### Q5: LoRA 权重什么时候需要重训？
+**优势**：
+- ✅ L-UAV 保持自主推理能力
+- ✅ Memory tokens 可复用于多个问题
+- ✅ L-UAV 可融合自己的推理和 H-UAV 的记忆
+- ✅ 符合原始设计（L-UAV 主导，H-UAV 辅助）
 
-**A**: 建议：
-- **定期重训**：每周/月一次（持续改进）
-- **数据漂移**：任务分布变化时
-- **性能下降**：监控到准确率降低
-- **新任务**：添加新功能时
+**劣势**：
+- ⚠️ 需要两次 L-UAV 推理（base + enhanced）
+- ⚠️ 传输 128 KB memory tokens（vs 100 bytes answer）
+
+### 方案 B：H-UAV 返回 Answer（错误）❌
+
+```
+L-UAV: base_inference() → answer_1 (confidence: 0.45)
+       ↓
+L-UAV → H-UAV: request_answer()
+       ↓
+H-UAV: full_inference(memory) → answer_2
+       ↓
+L-UAV: use(answer_2)
+```
+
+**问题**：
+- ❌ L-UAV 丧失自主能力（依赖 H-UAV）
+- ❌ H-UAV 需要完整推理（慢）
+- ❌ 不符合设计框架（L-UAV 应主导）
+
+---
+
+## 为什么返回 Memory Tokens？
+
+### 设计哲学
+
+**原始设计**：
+- **L-UAV**：主导推理，具备自主能力
+- **H-UAV**：辅助 L-UAV，提供记忆支持
+- **Self-Matching**：L-UAV 自我评估，决定是否需要帮助
+
+如果 H-UAV 直接返回答案：
+- L-UAV 沦为"传声筒"（只负责转发）
+- 违背了 L-UAV 的自主性
+- Self-matching 失去意义
+
+**Memory tokens 的优势**：
+1. **保持自主性**：L-UAV 最终决定如何使用 memory
+2. **可解释性**：L-UAV 知道哪些信息来自 H-UAV
+3. **灵活性**：同一 memory 可用于多个相关问题
+4. **渐进增强**：L-UAV 可调整 memory 的权重
 
 ---
 
 ## 总结
 
-### H-UAV LoRA-Only 架构优势
+### 正确的架构理解
 
-1. ✅ **轻量级服务**：0.7 MB 权重，易于部署
-2. ✅ **高效推理**：0.3 ms LoRA 开销
-3. ✅ **易于维护**：静态权重，版本管理简单
-4. ✅ **可扩展**：多任务 LoRA 池
-5. ✅ **高并发**：10-50 L-UAV/GPU
+1. **L-UAV**:
+   - 主导推理
+   - Self-matching 评估置信度
+   - 低置信度时请求 H-UAV **记忆 tokens**
+   - 使用 memory tokens 增强推理
+   - 生成最终答案
 
-### 与原始设计框架完全契合
+2. **H-UAV**:
+   - 记忆提供者
+   - 生成 LoRA memory tokens
+   - **只返回 tokens，不返回答案**
+   - 轻量快速（0.3 ms 生成）
 
-- **L-UAV**: 仅推理 + self-matching ✅
-- **H-UAV**: 维护记忆池 (LoRA) ✅
-- **协作**: L-UAV 请求 → H-UAV 服务 ✅
+3. **协作模式**:
+   - L-UAV 主导，H-UAV 辅助
+   - Memory tokens 作为桥梁
+   - L-UAV 融合 self + memory
 
-### 下一步
+### API Summary
 
-1. ✅ 训练 H-UAV LoRA 权重
-   ```bash
-   ./train_lora_only_sqa.sh
-   ```
+```python
+# H-UAV API
+POST /get_memory
+{
+    "image": base64_str,
+    "question": str
+}
+→ Returns: {
+    "memory_tokens": [[float × 4096] × 8],
+    "memory_shape": [8, 4096]
+}
 
-2. ✅ 启动 H-UAV 服务器
-   ```bash
-   python hierarchical_uav/huav_lora_server.py \
-       --lora_memory ./outputs/lora_only_sqa/lora_weights_final.pt
-   ```
+# L-UAV Usage
+memory = request_huav('/get_memory', image, question)
+answer = luav_inference(image, question, memory)
+```
 
-3. ✅ L-UAV 请求测试
-   ```bash
-   python hierarchical_uav/eval_sqa.py \
-       --uav_type l-uav \
-       --huav_server http://localhost:8000
-   ```
-
----
-
-**LoRA-Only Memory = H-UAV 的最佳选择！** 🚀
+**核心原则**：H-UAV 生成记忆，L-UAV 使用记忆进行推理。

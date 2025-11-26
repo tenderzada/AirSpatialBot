@@ -143,14 +143,17 @@ class HUAVLoRAServer:
         logger.warning("Using placeholder for base LLaVA model")
         return None
 
-    def process_request(
+    def generate_memory(
         self,
         image: Image.Image,
         question: str,
         bbox_3d: Optional[torch.Tensor] = None
     ) -> Dict:
         """
-        Process L-UAV request with LoRA memory enhancement.
+        Generate LoRA memory tokens for L-UAV request.
+
+        H-UAV ONLY returns memory tokens, NOT the final answer.
+        L-UAV uses these memory tokens to enhance its own inference.
 
         Args:
             image: Input image
@@ -158,7 +161,7 @@ class HUAVLoRAServer:
             bbox_3d: Optional 3D bounding box
 
         Returns:
-            Response dict with answer and metadata
+            Response dict with memory tokens and metadata
         """
         import time
         start_time = time.time()
@@ -176,34 +179,42 @@ class HUAVLoRAServer:
                 device=self.device
             )
 
-            # 2. Generate LoRA memory
+            # 2. Generate LoRA memory tokens
             with torch.no_grad():
-                enhanced_hidden, metrics = self.lora_layer(hidden_states)
+                memory_tokens, metrics = self.lora_layer.generate_memory(
+                    hidden_states,
+                    use_trigger=False  # H-UAV always generates memory
+                )
 
-            # 3. Generate answer with enhanced hidden states
-            # TODO: Implement actual generation
-            answer = "Placeholder answer (LoRA memory applied)"
+            # 3. Extract memory tokens (NOT answer!)
+            # memory_tokens: [batch_size, num_memory_tokens, hidden_size]
+            # e.g., [1, 8, 4096]
 
-            # 4. Compute confidence (dummy for now)
-            confidence = 0.85
+            if memory_tokens is not None:
+                # Convert to numpy for serialization
+                memory_array = memory_tokens.cpu().numpy()
+                memory_shape = memory_array.shape
+            else:
+                memory_array = None
+                memory_shape = None
 
             inference_time = time.time() - start_time
             self.total_inference_time += inference_time
 
             response = {
-                'answer': answer,
-                'confidence': confidence,
-                'memory_used': metrics.get('memory_generated', 0) > 0,
+                'memory_tokens': memory_array,  # [num_tokens, hidden_size]
+                'memory_shape': memory_shape,    # (1, 8, 4096)
+                'memory_generated': memory_tokens is not None,
                 'inference_time_ms': inference_time * 1000,
                 'request_id': self.request_count
             }
 
-            logger.info(f"Request #{self.request_count}: {inference_time*1000:.1f}ms")
+            logger.info(f"Request #{self.request_count}: Generated {memory_shape[1] if memory_shape else 0} memory tokens in {inference_time*1000:.1f}ms")
 
             return response
 
         except Exception as e:
-            logger.error(f"Error processing request: {str(e)}")
+            logger.error(f"Error generating memory: {str(e)}")
             return {
                 'error': str(e),
                 'request_id': self.request_count
@@ -233,10 +244,13 @@ def health_check():
     return jsonify({'status': 'healthy', 'model': 'H-UAV LoRA Server'})
 
 
-@app.route('/infer', methods=['POST'])
-def infer():
+@app.route('/get_memory', methods=['POST'])
+def get_memory():
     """
-    Main inference endpoint for L-UAV requests.
+    Memory generation endpoint for L-UAV requests.
+
+    H-UAV generates and returns LoRA memory tokens (NOT the final answer).
+    L-UAV receives these memory tokens and uses them to enhance its own inference.
 
     Request format:
     {
@@ -247,9 +261,9 @@ def infer():
 
     Response format:
     {
-        'answer': str,
-        'confidence': float,
-        'memory_used': bool,
+        'memory_tokens': list (serialized numpy array),
+        'memory_shape': tuple (e.g., [1, 8, 4096]),
+        'memory_generated': bool,
         'inference_time_ms': float
     }
     """
@@ -276,13 +290,18 @@ def infer():
         if 'bbox_3d' in data:
             bbox_3d = torch.tensor(data['bbox_3d'], dtype=torch.float32)
 
-        # Process request
-        response = huav_model.process_request(image, question, bbox_3d)
+        # Generate memory tokens
+        response = huav_model.generate_memory(image, question, bbox_3d)
+
+        # Serialize memory tokens
+        if response.get('memory_tokens') is not None:
+            # Convert numpy array to list for JSON serialization
+            response['memory_tokens'] = response['memory_tokens'].tolist()
 
         return jsonify(response)
 
     except Exception as e:
-        logger.error(f"Error in /infer: {str(e)}")
+        logger.error(f"Error in /get_memory: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -354,10 +373,17 @@ def main():
     logger.info(f"Device: {args.device}")
     logger.info(f"LoRA weights: {args.lora_memory or 'None (untrained)'}")
     logger.info("=" * 70)
+    logger.info("\nArchitecture:")
+    logger.info("  L-UAV → Self-match (low confidence) → Request H-UAV")
+    logger.info("  H-UAV → Generate LoRA Memory → Return to L-UAV")
+    logger.info("  L-UAV → Use memory → Enhanced inference → Answer")
+    logger.info("=" * 70)
     logger.info("\nEndpoints:")
     logger.info(f"  Health check: http://{args.host}:{args.port}/health")
-    logger.info(f"  Inference: http://{args.host}:{args.port}/infer")
+    logger.info(f"  Get memory: http://{args.host}:{args.port}/get_memory")
     logger.info(f"  Statistics: http://{args.host}:{args.port}/stats")
+    logger.info("=" * 70)
+    logger.info("\nH-UAV returns MEMORY TOKENS (not answers) to L-UAV")
     logger.info("=" * 70)
 
     app.run(host=args.host, port=args.port, threaded=True)
