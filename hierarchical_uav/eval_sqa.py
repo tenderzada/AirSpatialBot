@@ -389,6 +389,234 @@ def run_huav_eval(
         print(f"\n✓ Memory state saved to {memory_path}")
 
 
+def run_huav_standalone_eval(
+    config: UAVConfig,
+    test_data: List[Dict],
+    output_path: str
+):
+    """
+    Run H-UAV evaluation in standalone mode (direct inference).
+
+    Args:
+        config: H-UAV configuration
+        test_data: List of test samples
+        output_path: Path to save results
+    """
+    print("=" * 60)
+    print("Starting H-UAV SQA Evaluation (Standalone Mode)")
+    print("Direct inference with trained MAC memory")
+    print("=" * 60)
+
+    # Load H-UAV model
+    print(f"\nLoading H-UAV model on {config.device}...")
+    huav_model = LLaVAWithMAC(config)
+    print("✓ H-UAV model loaded")
+
+    # Load trained memory if specified
+    if hasattr(config, 'load_memory') and config.load_memory:
+        print(f"\nLoading trained MAC memory from {config.load_memory}...")
+        huav_model.load_mac_state(config.load_memory)
+        print("✓ Trained memory loaded - H-UAV ready with learned representations")
+    else:
+        print("\n⚠️  No trained memory specified - using random initialization")
+        print("   Results will likely be poor. Use --load-memory to load trained memory.")
+
+    # Evaluation loop
+    print(f"\nEvaluating on {len(test_data)} samples...")
+    print("=" * 60)
+
+    results = []
+
+    for i, sample in enumerate(tqdm(test_data, desc="H-UAV Standalone SQA Evaluation")):
+        try:
+            # Parse sample
+            question_id = sample.get('question_id', i)
+            question = sample.get('question', '')
+            qtype = sample.get('qtype', 'unknown')
+            image_id = sample.get('image_id', '')
+            ground_truth = sample.get('ground_truth', 0.0)
+
+            # Parse bbox from question
+            bbox_2d = parse_bbox_from_question(question)
+            if bbox_2d is None:
+                bbox_2d = sample.get('bbox', None)
+
+            # Load and process image
+            image_path = os.path.join(config.image_dir, image_id) if hasattr(config, 'image_dir') else None
+
+            if not image_path or not os.path.exists(image_path):
+                if i == 0 or (i % 100 == 0):
+                    logger.warning(f"Image not found: {image_path}, skipping")
+                continue
+
+            image = Image.open(image_path).convert('RGB')
+
+            # Crop to bbox region for better focus
+            if bbox_2d is not None:
+                image = crop_image_by_bbox(image, bbox_2d, padding=0.15)
+
+            image_tensor = huav_model.image_processor.preprocess(image, return_tensors='pt')['pixel_values']
+            image_tensor = image_tensor.to(config.device)
+
+            # For 8-bit models, ensure dtype consistency
+            vision_tower = huav_model.llava_model.get_model().get_vision_tower()
+            if hasattr(vision_tower, 'dtype'):
+                image_tensor = image_tensor.to(dtype=vision_tower.dtype)
+
+            # Prepare question prompt
+            from llava.conversation import conv_templates
+            from llava.constants import DEFAULT_IMAGE_TOKEN
+
+            question_clean = re.sub(r'<bbox>.*?</bbox>', '', question).strip()
+
+            # Create specific prompts for each question type
+            if qtype == 'depth':
+                prompt_question = f"What is the depth of this vehicle in meters? Answer with just the numeric value."
+            elif qtype == 'distance':
+                prompt_question = f"How many meters is this vehicle from the camera/drone? Answer with just the numeric value."
+            elif qtype == 'length':
+                prompt_question = f"What is the length of this vehicle in millimeters? Answer with just the numeric value."
+            elif qtype == 'width':
+                prompt_question = f"What is the width of this vehicle in millimeters? Answer with just the numeric value."
+            elif qtype == 'height':
+                prompt_question = f"What is the height of this vehicle in millimeters? Answer with just the numeric value."
+            elif qtype == 'size':
+                prompt_question = f"What are the length, width, and height of this vehicle in millimeters? Answer with three numeric values."
+            else:
+                prompt_question = question_clean if question_clean else question
+
+            question_with_image = f"{DEFAULT_IMAGE_TOKEN}\n{prompt_question}"
+
+            conv = conv_templates["vicuna_v1"].copy()
+            conv.append_message(conv.roles[0], question_with_image)
+            conv.append_message(conv.roles[1], None)
+            prompt = conv.get_prompt()
+
+            input_ids = huav_model.tokenizer(prompt, return_tensors='pt')['input_ids'].to(config.device)
+
+            if input_ids is None or input_ids.shape[0] == 0 or input_ids.shape[1] <= 1:
+                logger.error(f"Sample {i}: Invalid input_ids, skipping")
+                continue
+
+            # Generate answer with H-UAV (using MAC memory)
+            with torch.no_grad():
+                with torch.cuda.amp.autocast(enabled=config.load_8bit, dtype=torch.float16):
+                    output_ids = huav_model.llava_model.generate(
+                        inputs=input_ids,
+                        images=image_tensor,
+                        max_new_tokens=64,
+                        min_new_tokens=1,
+                        do_sample=False,
+                        num_beams=1
+                    )
+
+            # Decode answer
+            if output_ids.shape[1] <= input_ids.shape[1]:
+                answer_text = huav_model.tokenizer.decode(
+                    output_ids[0],
+                    skip_special_tokens=True
+                ).strip()
+            else:
+                answer_text = huav_model.tokenizer.decode(
+                    output_ids[0, input_ids.shape[1]:],
+                    skip_special_tokens=True
+                ).strip()
+
+            # Extract numeric value from answer
+            predicted_value = extract_numeric_answer(answer_text, qtype)
+
+            # Parse ground truth value
+            gt_value = parse_ground_truth(ground_truth, qtype)
+
+            if gt_value is None:
+                logger.warning(f"Sample {i}: Could not parse ground_truth '{ground_truth}', skipping")
+                continue
+
+            # Record result
+            results.append({
+                'question_id': question_id,
+                'image_id': image_id,
+                'question': question,
+                'qtype': qtype,
+                'answer_text': answer_text,
+                'predicted_value': predicted_value,
+                'ground_truth': gt_value,
+                'source': 'huav_standalone'
+            })
+
+        except Exception as e:
+            import traceback
+            logger.error(f"Error processing sample {i}: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            continue
+
+    # Save results
+    print(f"\n\nSaving results to {output_path}...")
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    with open(output_path, 'w') as f:
+        for result in results:
+            f.write(json.dumps(result) + '\n')
+
+    print(f"✓ Results saved")
+
+    # === Compute Regression Metrics ===
+    print("\n" + "=" * 60)
+    print("H-UAV Standalone SQA Regression Evaluation")
+    print("=" * 60)
+
+    # Filter valid predictions
+    valid_results = [r for r in results if r['predicted_value'] is not None]
+    invalid_count = len(results) - len(valid_results)
+
+    print(f"\nTotal samples: {len(results)}")
+    print(f"Valid predictions: {len(valid_results)} ({len(valid_results)/len(results)*100:.1f}%)")
+    print(f"Invalid predictions: {invalid_count} ({invalid_count/len(results)*100:.1f}%)")
+
+    if len(valid_results) > 0:
+        # Overall metrics
+        predictions = [r['predicted_value'] for r in valid_results]
+        ground_truths = [r['ground_truth'] for r in valid_results]
+        overall_metrics = compute_regression_metrics(predictions, ground_truths)
+
+        print(f"\n{'Overall Metrics':^60}")
+        print(f"{'-'*60}")
+        print(f"  MAE (Mean Absolute Error):    {overall_metrics['mae']:>10.2f}")
+        print(f"  RMSE (Root Mean Square Error): {overall_metrics['rmse']:>10.2f}")
+        print(f"  R² (R-squared):                {overall_metrics['r2']:>10.4f}")
+        print(f"  Sample count:                  {overall_metrics['count']:>10d}")
+
+        # Metrics by question type
+        print(f"\n{'Metrics by Question Type':^60}")
+        print(f"{'-'*60}")
+
+        qtypes = set(r['qtype'] for r in valid_results)
+        for qtype in sorted(qtypes):
+            qtype_results = [r for r in valid_results if r['qtype'] == qtype]
+            if len(qtype_results) > 0:
+                preds = [r['predicted_value'] for r in qtype_results]
+                gts = [r['ground_truth'] for r in qtype_results]
+                metrics = compute_regression_metrics(preds, gts)
+
+                print(f"\n  {qtype.upper():12s} (n={metrics['count']})")
+                print(f"    MAE:  {metrics['mae']:8.2f}")
+                print(f"    RMSE: {metrics['rmse']:8.2f}")
+                print(f"    R²:   {metrics['r2']:8.4f}")
+
+    # Show sample results
+    print(f"\n" + "=" * 60)
+    print("Sample Results (first 5)")
+    print("=" * 60)
+    for i, result in enumerate(results[:5]):
+        print(f"\n[Sample {i+1}] {result['qtype']}")
+        print(f"  Question: {result['question'][:70]}...")
+        print(f"  Predicted: {result['predicted_value']}")
+        print(f"  Ground Truth: {result['ground_truth']}")
+        if result['predicted_value'] is not None:
+            error = abs(result['predicted_value'] - result['ground_truth'])
+            print(f"  Error: {error:.2f}")
+
+
 def run_luav_eval(
     config: UAVConfig,
     test_data: List[Dict],
@@ -777,7 +1005,7 @@ def main():
     parser.add_argument(
         '--standalone',
         action='store_true',
-        help='Run L-UAV in standalone mode (no H-UAV connection)'
+        help='Run in standalone mode: H-UAV direct inference, L-UAV no H-UAV connection'
     )
 
     # Data configuration
@@ -848,7 +1076,15 @@ def main():
         config.image_dir = args.image_dir
         config.load_memory = args.load_memory
 
-        run_huav_eval(config, test_data, args.output)
+        if args.standalone:
+            # H-UAV standalone: direct inference with trained memory
+            print(f"\n⚠️  STANDALONE MODE: Direct H-UAV inference")
+            print(f"   → Using trained MAC memory for all samples")
+            print(f"   → No server mode\n")
+            run_huav_standalone_eval(config, test_data, args.output)
+        else:
+            # H-UAV server mode
+            run_huav_eval(config, test_data, args.output)
 
     else:  # l-uav
         config = UAVConfig.create_luav_config(

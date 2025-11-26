@@ -47,7 +47,7 @@ Usage:
 
 Options:
     --no-8bit              Disable 8-bit quantization (use full precision)
-    --standalone           Run L-UAV in standalone mode (no H-UAV connection)
+    --standalone           Run in standalone mode (H-UAV: direct inference, L-UAV: no H-UAV)
     --max-samples N        Evaluate only N samples (for testing)
     --threshold T          Set self-matching threshold (default: 0.7)
     --port P               Set H-UAV port (default: 50051)
@@ -55,6 +55,9 @@ Options:
 Examples:
     # Start H-UAV server (with default SQA-trained memory)
     $0 h-uav
+
+    # Run H-UAV standalone (direct inference with trained memory)
+    $0 h-uav --standalone
 
     # Start H-UAV server with specific trained memory
     HUAV_MEMORY=./outputs/huav_training_sqa/huav_memory_final.pt $0 h-uav
@@ -75,12 +78,20 @@ EOF
 
 run_huav() {
     echo "=========================================="
-    echo "Starting H-UAV Server for SQA Evaluation"
+    if [ -n "$STANDALONE" ]; then
+        echo "H-UAV Standalone SQA Evaluation"
+        echo "Mode: Direct inference (no server)"
+    else
+        echo "Starting H-UAV Server for SQA Evaluation"
+        echo "Mode: Server (waiting for L-UAV)"
+    fi
     echo "=========================================="
     echo ""
     echo "Configuration:"
     echo "  Device: $HUAV_DEVICE"
-    echo "  Port: $HUAV_PORT"
+    if [ -z "$STANDALONE" ]; then
+        echo "  Port: $HUAV_PORT"
+    fi
     echo "  Model: $MODEL_PATH"
     echo "  Vision Tower: $VISION_TOWER"
     if [ -f "$HUAV_MEMORY_PATH" ]; then
@@ -92,6 +103,13 @@ run_huav() {
 
     mkdir -p "$OUTPUT_DIR"
 
+    # Set output filename based on mode
+    if [ -n "$STANDALONE" ]; then
+        OUTPUT_FILE="$OUTPUT_DIR/sqa_huav_standalone_results.jsonl"
+    else
+        OUTPUT_FILE="$OUTPUT_DIR/sqa_huav_results.jsonl"
+    fi
+
     CMD="python hierarchical_uav/eval_sqa.py \
         --uav_type h-uav \
         --device $HUAV_DEVICE \
@@ -100,8 +118,9 @@ run_huav() {
         --vision_tower $VISION_TOWER \
         --test_data $SQA_TEST_DATA \
         --image_dir $IMAGE_DIR \
-        --output $OUTPUT_DIR/sqa_huav_results.jsonl \
-        $LOAD_8BIT"
+        --output $OUTPUT_FILE \
+        $LOAD_8BIT \
+        $STANDALONE"
 
     if [ -f "$HUAV_MEMORY_PATH" ]; then
         CMD="$CMD --load-memory $HUAV_MEMORY_PATH"
