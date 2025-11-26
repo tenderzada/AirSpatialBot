@@ -8,6 +8,7 @@ Implements the core memory components for test-time learning:
 4. Memory Weaver (LoRA-based generative memory)
 5. Memory Trigger (adaptive memory invocation)
 6. Hybrid MAC-LoRA Layer (combines MAC and MemGen approaches)
+7. LoRA-Only Memory Layer (pure LoRA for L-UAV deployment)
 """
 
 from .neural_memory import NeuralMemory
@@ -16,6 +17,7 @@ from .persistent_memory import PersistentMemory
 from .memory_weaver import MemoryWeaver, MemoryWeaverConfig, LoRALayer, AdaptiveMemoryWeaver
 from .memory_trigger import MemoryTrigger, MemoryTriggerConfig, RewardBasedTrigger
 from .hybrid_mac_lora import HybridMACLoRALayer, HybridMACLoRAConfig
+from .lora_memory import LoRAMemoryLayer, LoRAMemoryConfig, analyze_luav_compatibility
 
 __all__ = [
     # Original MAC components
@@ -34,4 +36,8 @@ __all__ = [
     # Hybrid architecture
     'HybridMACLoRALayer',
     'HybridMACLoRAConfig',
+    # LoRA-only architecture (for L-UAV)
+    'LoRAMemoryLayer',
+    'LoRAMemoryConfig',
+    'analyze_luav_compatibility',
 ]
