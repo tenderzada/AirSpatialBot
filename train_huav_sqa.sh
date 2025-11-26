@@ -16,7 +16,7 @@ OUTPUT_DIR="./outputs/huav_training_sqa"
 DEVICE="cuda:0"
 
 # Training parameters
-NUM_EPOCHS=3
+NUM_EPOCHS=1
 LOG_INTERVAL=100
 SAVE_INTERVAL=1
 
