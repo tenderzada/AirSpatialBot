@@ -69,6 +69,57 @@ def parse_numeric_answer(answer: str) -> Optional[float]:
     return None
 
 
+def parse_ground_truth(ground_truth, qtype: str) -> Optional[float]:
+    """
+    Parse ground truth value, handling different formats.
+
+    Args:
+        ground_truth: Ground truth value (can be float, int, or string)
+        qtype: Question type (depth, distance, length, width, height, size)
+
+    Returns:
+        Numeric ground truth value or None
+    """
+    # If already numeric, return it
+    if isinstance(ground_truth, (int, float)):
+        return float(ground_truth)
+
+    # Convert to string for parsing
+    gt_str = str(ground_truth)
+
+    # For 'size' type, handle format like '<size>4753,1832,1469</size>' or 'size=4753,1832,1469'
+    if qtype == 'size':
+        # Extract numbers from <size>...</size> format
+        match = re.search(r'<size>([\d.,\s]+)</size>', gt_str)
+        if not match:
+            # Try 'size=xxx,yyy,zzz' format
+            match = re.search(r'size=([\d.,\s]+)', gt_str, re.IGNORECASE)
+
+        if match:
+            numbers_str = match.group(1)
+            # Split by comma and take first value (length)
+            numbers = re.findall(r'[\d.]+', numbers_str)
+            if numbers:
+                try:
+                    return float(numbers[0])
+                except ValueError:
+                    pass
+
+    # For other types or fallback, try direct conversion
+    try:
+        return float(gt_str)
+    except ValueError:
+        # Try to extract first numeric value
+        numbers = re.findall(r'[\d.]+', gt_str)
+        if numbers:
+            try:
+                return float(numbers[0])
+            except ValueError:
+                pass
+
+    return None
+
+
 def evaluate_huav_standalone(
     memory_weaver,
     tokenizer,
@@ -108,12 +159,11 @@ def evaluate_huav_standalone(
             qtype = sample.get('qtype', 'unknown')
             image_id = sample.get('image_id', '')
 
-            # Ensure ground_truth is a float
+            # Parse ground_truth with proper handling for different formats
             ground_truth_raw = sample.get('ground_truth', 0.0)
-            try:
-                ground_truth = float(ground_truth_raw)
-            except (ValueError, TypeError):
-                logger.warning(f"Sample {i}: Invalid ground_truth '{ground_truth_raw}', skipping")
+            ground_truth = parse_ground_truth(ground_truth_raw, qtype)
+            if ground_truth is None:
+                logger.warning(f"Sample {i}: Could not parse ground_truth '{ground_truth_raw}' for qtype '{qtype}', skipping")
                 continue
 
             # Load image
