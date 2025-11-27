@@ -122,19 +122,9 @@ def evaluate_huav_standalone(
             image_tensor = image_processor.preprocess(image, return_tensors='pt')['pixel_values']
             image_tensor = image_tensor.to(device)
 
-            # Ensure dtype consistency for 8-bit models
-            try:
-                # Try to get vision tower's dtype
-                vision_tower = memory_weaver.base_model.get_model().get_vision_tower()
-                if vision_tower is not None:
-                    # Check if vision tower has a weight parameter to infer dtype
-                    for param in vision_tower.parameters():
-                        image_tensor = image_tensor.to(dtype=param.dtype)
-                        break
-            except Exception as e:
-                # If dtype detection fails, use default float16 for 8-bit models
-                logger.debug(f"Could not detect vision tower dtype: {e}")
-                pass
+            # For 8-bit models, convert to float16 to match model dtype
+            # Vision tower might be float32, but language model is float16
+            image_tensor = image_tensor.to(torch.float16)
 
             # Clean question
             question_clean = re.sub(r'<bbox>.*?</bbox>', '', question).strip()
