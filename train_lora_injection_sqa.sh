@@ -104,7 +104,8 @@ CMD="python hierarchical_uav/train_lora_injection.py \
     --target_layers $TARGET_LAYERS \
     --num_memory_tokens $NUM_MEMORY_TOKENS \
     --learning_rate $LEARNING_RATE \
-    --weight_decay $WEIGHT_DECAY"
+    --weight_decay $WEIGHT_DECAY \
+    --load_8bit"
 
 # Run training
 eval $CMD

@@ -351,7 +351,9 @@ def create_huav_memory_weaver(
     base_llava_path: str,
     device: str = 'cuda:0',
     lora_rank: int = 8,
-    target_layers: List[int] = None
+    target_layers: List[int] = None,
+    load_8bit: bool = False,
+    load_4bit: bool = False
 ) -> LLaVAWithLoRAInjection:
     """
     Create H-UAV memory weaver with LoRA injection.
@@ -361,14 +363,37 @@ def create_huav_memory_weaver(
         device: Device to use
         lora_rank: LoRA rank
         target_layers: Which layers to inject LoRA (default: [8, 16, 24])
+        load_8bit: Load model in 8-bit mode
+        load_4bit: Load model in 4-bit mode
 
     Returns:
         Memory weaver model
     """
-    # Load base LLaVA
-    # TODO: Load actual LLaVA model
-    logger.warning("Using placeholder for base LLaVA")
-    base_llava = None  # Placeholder
+    # Load base LLaVA model
+    from llava.model.builder import load_pretrained_model
+    from llava.mm_utils import get_model_name_from_path
+
+    logger.info(f"Loading base LLaVA model from {base_llava_path}...")
+    model_name = get_model_name_from_path(base_llava_path)
+
+    # Set device map based on device
+    if 'cuda' in str(device):
+        device_id = str(device).split(':')[-1] if ':' in str(device) else '0'
+        device_map = {"": int(device_id)}
+    else:
+        device_map = "auto"
+
+    # Load pretrained LLaVA
+    tokenizer, base_llava, image_processor, context_len = load_pretrained_model(
+        model_path=base_llava_path,
+        model_base=None,
+        model_name=model_name,
+        load_8bit=load_8bit,
+        load_4bit=load_4bit,
+        device_map=device_map
+    )
+
+    logger.info(f"Successfully loaded {model_name}")
 
     # Create config
     config = LoRAInjectionConfig(

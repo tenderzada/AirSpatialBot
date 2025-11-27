@@ -363,6 +363,12 @@ def main():
     parser.add_argument('--num_memory_tokens', type=int, default=8,
                        help='Number of memory tokens')
 
+    # Model loading options
+    parser.add_argument('--load_8bit', action='store_true',
+                       help='Load model in 8-bit mode')
+    parser.add_argument('--load_4bit', action='store_true',
+                       help='Load model in 4-bit mode')
+
     # Optimizer
     parser.add_argument('--learning_rate', type=float, default=1e-4,
                        help='Learning rate')
@@ -385,7 +391,9 @@ def main():
         base_llava_path=args.model_path,
         device=args.device,
         lora_rank=args.lora_rank,
-        target_layers=args.target_layers
+        target_layers=args.target_layers,
+        load_8bit=args.load_8bit,
+        load_4bit=args.load_4bit
     )
 
     # Train
