@@ -11,7 +11,7 @@ echo "============================================================"
 # Configuration
 MODEL_PATH="/mnt/data/AirSpatialBot"
 VISION_TOWER="/mnt/data/clip-vit-large-patch14-336"
-LORA_WEIGHTS="./outputs/lora_injection_sqa/lora_adapters_final.pt"
+LORA_WEIGHTS="./outputs/lora_injection_sqa/lora_adapters_epochfinal.pt"
 TEST_DATA="/mnt/data/AirSpatial/airspatial_sqa_test.jsonl"
 IMAGE_DIR="/mnt/data/AirSpatial/images"
 OUTPUT_DIR="./outputs/eval_huav_standalone"
