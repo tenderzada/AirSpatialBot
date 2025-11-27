@@ -285,6 +285,33 @@ class LLaVAWithLoRAInjection(nn.Module):
         trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
         return total, trainable
 
+    def load_lora_state(self, checkpoint: Dict):
+        """
+        Load LoRA adapters and memory token generator from checkpoint.
+
+        Args:
+            checkpoint: Checkpoint dict with 'lora_adapters' and 'memory_token_generator'
+        """
+        if 'lora_adapters' in checkpoint:
+            self.lora_adapters.load_state_dict(checkpoint['lora_adapters'])
+            logger.info("✓ Loaded LoRA adapters")
+
+        if 'memory_token_generator' in checkpoint:
+            self.memory_token_generator.load_state_dict(checkpoint['memory_token_generator'])
+            logger.info("✓ Loaded memory token generator")
+
+    def save_lora_state(self) -> Dict:
+        """
+        Save LoRA adapters and memory token generator.
+
+        Returns:
+            Checkpoint dict
+        """
+        return {
+            'lora_adapters': self.lora_adapters.state_dict(),
+            'memory_token_generator': self.memory_token_generator.state_dict()
+        }
+
 
 class MemoryTokenGenerator(nn.Module):
     """
@@ -414,6 +441,11 @@ def create_huav_memory_weaver(
     total, trainable = memory_weaver.get_trainable_parameters_count()
     logger.info(f"Total parameters: {total:,}")
     logger.info(f"Trainable parameters: {trainable:,} ({trainable/total*100:.2f}%)")
+
+    # Store tokenizer and image_processor for convenience
+    memory_weaver.tokenizer = tokenizer
+    memory_weaver.image_processor = image_processor
+    memory_weaver.context_len = context_len
 
     return memory_weaver
 
