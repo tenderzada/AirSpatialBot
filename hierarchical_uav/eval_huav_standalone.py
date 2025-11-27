@@ -107,7 +107,14 @@ def evaluate_huav_standalone(
             question = sample.get('question', '')
             qtype = sample.get('qtype', 'unknown')
             image_id = sample.get('image_id', '')
-            ground_truth = sample.get('ground_truth', 0.0)
+
+            # Ensure ground_truth is a float
+            ground_truth_raw = sample.get('ground_truth', 0.0)
+            try:
+                ground_truth = float(ground_truth_raw)
+            except (ValueError, TypeError):
+                logger.warning(f"Sample {i}: Invalid ground_truth '{ground_truth_raw}', skipping")
+                continue
 
             # Load image
             image_path = os.path.join(image_dir, image_id)
