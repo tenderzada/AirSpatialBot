@@ -311,7 +311,8 @@ def main():
         device=args.device,
         lora_rank=args.lora_rank,
         target_layers=args.target_layers,
-        load_8bit=args.load_8bit
+        load_8bit=args.load_8bit,
+        vision_tower=args.vision_tower
     )
 
     # Load trained LoRA weights

@@ -380,7 +380,8 @@ def create_huav_memory_weaver(
     lora_rank: int = 8,
     target_layers: List[int] = None,
     load_8bit: bool = False,
-    load_4bit: bool = False
+    load_4bit: bool = False,
+    vision_tower: str = None
 ) -> LLaVAWithLoRAInjection:
     """
     Create H-UAV memory weaver with LoRA injection.
@@ -392,6 +393,7 @@ def create_huav_memory_weaver(
         target_layers: Which layers to inject LoRA (default: [8, 16, 24])
         load_8bit: Load model in 8-bit mode
         load_4bit: Load model in 4-bit mode
+        vision_tower: Path to vision tower (CLIP)
 
     Returns:
         Memory weaver model
@@ -421,6 +423,16 @@ def create_huav_memory_weaver(
     )
 
     logger.info(f"Successfully loaded {model_name}")
+
+    # Ensure image processor is loaded
+    if image_processor is None:
+        from transformers import CLIPImageProcessor
+        logger.warning("Image processor is None, loading manually...")
+        # Use vision_tower if specified, otherwise use base model path
+        vision_path = vision_tower if vision_tower else base_llava_path
+        logger.info(f"Loading image processor from {vision_path}")
+        image_processor = CLIPImageProcessor.from_pretrained(vision_path)
+        logger.info("✓ Image processor loaded manually")
 
     # Create config
     config = LoRAInjectionConfig(
