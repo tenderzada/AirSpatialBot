@@ -445,6 +445,16 @@ def create_huav_memory_weaver(
         hidden_size=4096
     )
 
+    # Ensure vision tower is loaded
+    try:
+        vision_tower_obj = base_llava.get_model().get_vision_tower()
+        if hasattr(vision_tower_obj, 'load_model'):
+            logger.info("Loading vision tower...")
+            vision_tower_obj.load_model()
+            logger.info("✓ Vision tower loaded")
+    except Exception as e:
+        logger.warning(f"Could not explicitly load vision tower: {e}")
+
     # Create memory weaver
     memory_weaver = LLaVAWithLoRAInjection(base_llava, config)
     memory_weaver.to(device)
