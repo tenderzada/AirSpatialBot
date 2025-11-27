@@ -53,7 +53,24 @@
 - `./outputs/lora_injection_sqa/lora_adapters_final.pt` - 最终 LoRA 权重 (~34 MB)
 - `./outputs/lora_injection_sqa/training_report.json` - 训练报告
 
-### 2. 启动 H-UAV 服务器
+### 2. 评估 H-UAV Standalone（测试 MemGen 效果）
+
+在启动完整的协作系统之前，建议先测试 H-UAV 的 LoRA 记忆编织器效果：
+
+```bash
+./start_huav_standalone.sh
+```
+
+**用途：**
+- 直接测试 LoRA 注入的效果
+- 验证 MemGen 记忆编织器在 SQA 上的性能
+- 作为上限性能参考
+
+**输出：**
+- `./outputs/eval_huav_standalone/results.json`
+- 包含整体指标和分类型指标
+
+### 3. 启动 H-UAV 服务器
 
 在一个终端中启动 H-UAV LoRA 记忆服务器：
 
@@ -302,15 +319,32 @@ LORA_RANK=4  # 从 8 降到 4
 - MAE: ~200-300
 - RMSE: ~300-400
 - H-UAV 使用率: 0%
+- 说明：纯轻量级推理，无记忆增强
 
-**L-UAV 协作模式：**
-- MAE: 预期降低 15-25%
-- RMSE: 预期降低 15-25%
+**H-UAV Standalone（MemGen 上限）：**
+- MAE: 预期 < L-UAV 独立模式 20-30%
+- RMSE: 预期 < L-UAV 独立模式 20-30%
+- 说明：直接使用 LoRA 记忆编织器，展示 MemGen 最佳性能
+
+**L-UAV 协作模式（实际部署）：**
+- MAE: 预期介于 L-UAV 独立和 H-UAV standalone 之间
+- RMSE: 预期介于 L-UAV 独立和 H-UAV standalone 之间
 - H-UAV 使用率: 30-50%
+- 说明：自适应协作，平衡性能和效率
+
+**性能关系：**
+```
+L-UAV standalone (基线)
+    ↓ (性能提升)
+L-UAV + H-UAV 协作 (实际部署)
+    ↓ (接近上限)
+H-UAV standalone (MemGen 上限)
+```
 
 **关键指标：**
 - H-UAV 请求率应该在 30-50% 之间（说明 self-matching 机制工作正常）
 - 协作模式的误差应该明显低于独立模式
+- H-UAV standalone 展示 LoRA 记忆编织器的最佳效果
 
 ## 进阶使用
 
@@ -344,6 +378,7 @@ DEVICE="cuda:1"  # in start_luav_with_huav.sh
 ```
 AirSpatialBot/
 ├── train_lora_injection_sqa.sh          # 训练 LoRA 记忆编织器
+├── start_huav_standalone.sh             # H-UAV 独立评估 (测试 MemGen)
 ├── start_huav_lora.sh                   # 启动 H-UAV 服务器
 ├── start_luav_with_huav.sh              # 启动 L-UAV (协作)
 ├── start_luav_standalone.sh             # 启动 L-UAV (独立)
@@ -351,12 +386,15 @@ AirSpatialBot/
 │   ├── mac_memory/
 │   │   └── lora_injection.py            # LoRA 注入实现
 │   ├── train_lora_injection.py          # 训练脚本
+│   ├── eval_huav_standalone.py          # H-UAV 独立评估
 │   ├── huav_lora_server_v2.py          # H-UAV 服务器
 │   └── eval_sqa_lora.py                # L-UAV 评估
 └── outputs/
     ├── lora_injection_sqa/              # 训练输出
     │   ├── lora_adapters_final.pt
     │   └── training_report.json
+    ├── eval_huav_standalone/            # H-UAV 独立评估结果
+    │   └── results.json
     ├── eval_luav_with_huav/             # 协作模式结果
     │   └── results.json
     └── eval_luav_standalone/            # 独立模式结果
