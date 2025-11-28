@@ -23,7 +23,9 @@ LOG_INTERVAL=100
 SAVE_INTERVAL=1  # Not used - only best model is saved
 
 # Multi-GPU training (DataParallel)
-GPUS="0 1"  # Use GPU 0 and 1, set to "0" for single GPU
+# Note: DataParallel currently has compatibility issues with custom methods
+# Using single GPU for stable training
+GPUS="0"  # Single GPU mode
 
 # LoRA injection parameters
 LORA_RANK=8
