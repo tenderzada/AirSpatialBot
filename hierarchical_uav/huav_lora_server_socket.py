@@ -201,32 +201,36 @@ class HUAVLoRAServer:
                 vision_tower = self.memory_weaver.base_model.get_model().get_vision_tower()
 
                 # 提取vision features
-                # Vision tower输出 [batch, num_patches, hidden_dim]
+                # Vision tower输出 [batch, num_patches, hidden_dim_vision]
                 vision_features = vision_tower(image_tensor)
 
                 # 如果输出是tuple，取第一个元素
                 if isinstance(vision_features, tuple):
                     vision_features = vision_features[0]
 
-                # vision_features shape: [1, num_patches, hidden_dim]
+                # vision_features shape: [1, num_patches, hidden_dim_vision]
                 # 我们需要选择代表性的tokens作为memory
 
-                # 策略1: 取前8个patch tokens
-                # 或者策略2: 均匀采样8个tokens
-                # 或者策略3: 使用CLS token + 采样tokens
-
-                batch_size, num_patches, hidden_dim = vision_features.shape
+                # 策略: 均匀采样8个tokens
+                batch_size, num_patches, hidden_dim_vision = vision_features.shape
 
                 if num_patches >= 8:
                     # 均匀采样8个tokens
                     indices = torch.linspace(0, num_patches - 1, 8, dtype=torch.long)
-                    memory_tokens = vision_features[0, indices, :]  # [8, hidden_dim]
+                    sampled_features = vision_features[0, indices, :]  # [8, hidden_dim_vision]
                 else:
                     # 如果patch数量少于8，重复填充
-                    memory_tokens = vision_features[0]  # [num_patches, hidden_dim]
-                    while memory_tokens.shape[0] < 8:
-                        memory_tokens = torch.cat([memory_tokens, memory_tokens], dim=0)
-                    memory_tokens = memory_tokens[:8, :]  # [8, hidden_dim]
+                    sampled_features = vision_features[0]  # [num_patches, hidden_dim_vision]
+                    while sampled_features.shape[0] < 8:
+                        sampled_features = torch.cat([sampled_features, sampled_features], dim=0)
+                    sampled_features = sampled_features[:8, :]  # [8, hidden_dim_vision]
+
+                # 通过 mm_projector 映射到语言模型维度
+                # mm_projector: [hidden_dim_vision] -> [hidden_dim_llm]
+                mm_projector = self.memory_weaver.base_model.get_model().mm_projector
+
+                # sampled_features: [8, hidden_dim_vision] -> [8, hidden_dim_llm]
+                memory_tokens = mm_projector(sampled_features)
 
                 # 转换为numpy
                 memory_tokens_np = memory_tokens.cpu().float().numpy()
