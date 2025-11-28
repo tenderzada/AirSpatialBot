@@ -227,6 +227,19 @@ class LUAVWithLoRAMemory:
         if vision_tower and hasattr(self.model.config, 'mm_vision_tower'):
             self.model.config.mm_vision_tower = vision_tower
 
+        # Ensure image_processor is loaded
+        if self.image_processor is None:
+            logger.warning("image_processor is None, loading manually...")
+            from transformers import CLIPImageProcessor
+            vision_path = vision_tower if vision_tower else model_path
+            self.image_processor = CLIPImageProcessor.from_pretrained(vision_path)
+            logger.info(f"✓ Loaded image_processor from {vision_path}")
+
+        # Ensure vision tower is loaded
+        vision_tower_obj = self.model.get_model().get_vision_tower()
+        if hasattr(vision_tower_obj, 'load_model'):
+            vision_tower_obj.load_model()
+
         logger.info(f"✓ L-UAV model loaded on {device}")
 
         # Create H-UAV client if address provided
