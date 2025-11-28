@@ -181,25 +181,69 @@ class HUAVLoRAServer:
         - question (str): 问题文本
         """
         try:
-            # TODO: 实现实际的memory生成逻辑
-            # 这里先返回一个占位符
+            # 提取图像和问题
+            image_bytes = request.get('image')
+            question = request.get('question', '')
 
-            # 生成随机memory tokens作为占位符
-            # 实际应该使用LoRA-injected LLaVA生成
-            num_memory_tokens = 8
-            hidden_dim = 4096
+            if image_bytes is None:
+                raise ValueError("No image provided in request")
 
-            memory_tokens = np.random.randn(num_memory_tokens, hidden_dim).astype(np.float32)
+            # 解码图像
+            image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
+
+            # 预处理图像
+            image_tensor = self.image_processor.preprocess(image, return_tensors='pt')['pixel_values']
+            image_tensor = image_tensor.to(self.device).to(torch.float16)
+
+            # 通过LoRA增强的vision tower提取特征
+            with torch.inference_mode():
+                # 获取vision tower
+                vision_tower = self.memory_weaver.base_model.get_model().get_vision_tower()
+
+                # 提取vision features
+                # Vision tower输出 [batch, num_patches, hidden_dim]
+                vision_features = vision_tower(image_tensor)
+
+                # 如果输出是tuple，取第一个元素
+                if isinstance(vision_features, tuple):
+                    vision_features = vision_features[0]
+
+                # vision_features shape: [1, num_patches, hidden_dim]
+                # 我们需要选择代表性的tokens作为memory
+
+                # 策略1: 取前8个patch tokens
+                # 或者策略2: 均匀采样8个tokens
+                # 或者策略3: 使用CLS token + 采样tokens
+
+                batch_size, num_patches, hidden_dim = vision_features.shape
+
+                if num_patches >= 8:
+                    # 均匀采样8个tokens
+                    indices = torch.linspace(0, num_patches - 1, 8, dtype=torch.long)
+                    memory_tokens = vision_features[0, indices, :]  # [8, hidden_dim]
+                else:
+                    # 如果patch数量少于8，重复填充
+                    memory_tokens = vision_features[0]  # [num_patches, hidden_dim]
+                    while memory_tokens.shape[0] < 8:
+                        memory_tokens = torch.cat([memory_tokens, memory_tokens], dim=0)
+                    memory_tokens = memory_tokens[:8, :]  # [8, hidden_dim]
+
+                # 转换为numpy
+                memory_tokens_np = memory_tokens.cpu().float().numpy()
+
+            logger.debug(f"Generated memory tokens: shape {memory_tokens_np.shape}")
 
             return {
                 'success': True,
-                'memory_tokens': memory_tokens,
-                'memory_shape': [num_memory_tokens, hidden_dim],
+                'memory_tokens': memory_tokens_np,
+                'memory_shape': list(memory_tokens_np.shape),
                 'cache_hit': False
             }
 
         except Exception as e:
             logger.error(f"Error generating memory: {e}")
+            import traceback
+            traceback.print_exc()
             return {
                 'success': False,
                 'error': str(e),
