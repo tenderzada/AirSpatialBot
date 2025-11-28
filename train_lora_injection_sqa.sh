@@ -17,10 +17,10 @@ OUTPUT_DIR="./outputs/lora_injection_sqa"
 DEVICE="cuda:0"
 
 # Training parameters
-NUM_EPOCHS=3
+NUM_EPOCHS=10
 BATCH_SIZE=4
 LOG_INTERVAL=100
-SAVE_INTERVAL=1
+SAVE_INTERVAL=1  # Not used - only best model is saved
 
 # LoRA injection parameters
 LORA_RANK=8
@@ -61,6 +61,12 @@ echo "  - Base LLaVA remains frozen"
 echo "  - Only LoRA parameters are trainable"
 echo "  - Memory generated from L-UAV hidden states"
 echo "  - Returns latent memory sequence"
+echo "  - Only best checkpoint is saved (based on loss)"
+echo ""
+echo "Training:"
+echo "  Epochs: $NUM_EPOCHS"
+echo "  Batch size: $BATCH_SIZE"
+echo "  Strategy: Save only the best model"
 echo ""
 echo "============================================================"
 echo ""
@@ -125,23 +131,30 @@ if [ $TRAIN_EXIT_CODE -eq 0 ]; then
     echo "Results saved to: $OUTPUT_DIR"
     echo ""
     echo "Outputs:"
-    echo "  - LoRA adapters: $OUTPUT_DIR/lora_adapters_final.pt"
+    echo "  - LoRA adapters (best): $OUTPUT_DIR/lora_adapters_best.pt"
     echo "  - Training report: $OUTPUT_DIR/training_report.json"
     echo ""
 
     # Show size
-    if [ -f "$OUTPUT_DIR/lora_adapters_final.pt" ]; then
-        SIZE=$(du -h "$OUTPUT_DIR/lora_adapters_final.pt" | cut -f1)
-        echo "✅ LoRA adapters size: $SIZE"
+    if [ -f "$OUTPUT_DIR/lora_adapters_best.pt" ]; then
+        SIZE=$(du -h "$OUTPUT_DIR/lora_adapters_best.pt" | cut -f1)
+        echo "✅ Best LoRA adapters size: $SIZE"
+    fi
+
+    # Show best epoch info if report exists
+    if [ -f "$OUTPUT_DIR/training_report.json" ] && command -v jq &> /dev/null; then
+        BEST_EPOCH=$(jq -r '.best_model.epoch' $OUTPUT_DIR/training_report.json)
+        BEST_LOSS=$(jq -r '.best_model.loss' $OUTPUT_DIR/training_report.json)
+        echo "🏆 Best model: Epoch $BEST_EPOCH (Loss: $BEST_LOSS)"
     fi
 
     echo ""
     echo "Next steps:"
     echo ""
-    echo "  1. Start H-UAV server with trained LoRA:"
+    echo "  1. Start H-UAV server with best LoRA checkpoint:"
     echo "     python hierarchical_uav/huav_lora_server_v2.py \\"
     echo "         --model_path $MODEL_PATH \\"
-    echo "         --lora_weights $OUTPUT_DIR/lora_adapters_final.pt \\"
+    echo "         --lora_weights $OUTPUT_DIR/lora_adapters_best.pt \\"
     echo "         --target_layers 8 16 24 \\"
     echo "         --port 8000"
     echo ""

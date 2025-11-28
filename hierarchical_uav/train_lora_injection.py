@@ -116,6 +116,8 @@ def train_lora_injection(
     # Training statistics
     total_samples = 0
     epoch_stats = []
+    best_loss = float('inf')
+    best_epoch = -1
 
     # Training mode
     memory_weaver.train()
@@ -255,18 +257,31 @@ def train_lora_injection(
         logger.info(f"  Skipped - errors: {skip_reasons['errors']}")
         logger.info("=" * 70)
 
-        # Save checkpoint
-        if (epoch + 1) % args.save_interval == 0:
-            save_checkpoint(memory_weaver, args.output_dir, epoch + 1)
+        # Check if this is the best model
+        if avg_epoch_loss < best_loss:
+            best_loss = avg_epoch_loss
+            best_epoch = epoch + 1
+            logger.info(f"\n🏆 New best model! Loss: {best_loss:.4f}")
+            save_checkpoint(memory_weaver, args.output_dir, 'best')
+            logger.info(f"✓ Saved best checkpoint")
+        else:
+            logger.info(f"\nCurrent loss: {avg_epoch_loss:.4f} (Best: {best_loss:.4f} @ Epoch {best_epoch})")
 
-    # Save final model
-    save_checkpoint(memory_weaver, args.output_dir, 'final')
+    # Final summary
+    logger.info(f"\n{'='*70}")
+    logger.info(f"Training Complete!")
+    logger.info(f"Best model at Epoch {best_epoch} with loss: {best_loss:.4f}")
+    logger.info(f"{'='*70}")
 
     # Generate training report
     report = {
         'training_mode': 'lora_injection',
         'total_samples': total_samples,
         'num_epochs': args.num_epochs,
+        'best_model': {
+            'epoch': best_epoch,
+            'loss': best_loss
+        },
         'lora_config': {
             'rank': args.lora_rank,
             'alpha': args.lora_alpha,
@@ -343,7 +358,7 @@ def main():
                        help='Device to use')
 
     # Training parameters
-    parser.add_argument('--num_epochs', type=int, default=3,
+    parser.add_argument('--num_epochs', type=int, default=10,
                        help='Number of training epochs')
     parser.add_argument('--batch_size', type=int, default=4,
                        help='Batch size')
