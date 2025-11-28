@@ -41,8 +41,7 @@ logger = logging.getLogger(__name__)
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from llava.model.builder import load_pretrained_model
-from llava.utils import get_model_name_from_path
+from llava.model.builder import load_pretrained_model, get_model_name_from_path
 from llava.conversation import conv_templates
 from llava.constants import DEFAULT_IMAGE_TOKEN
 
