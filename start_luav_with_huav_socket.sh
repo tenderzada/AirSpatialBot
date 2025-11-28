@@ -23,6 +23,9 @@ LUAV_DEVICE="cuda:1"
 HUAV_ADDRESS="localhost:50051"
 CONFIDENCE_THRESHOLD=0.5
 
+# Testing: Force H-UAV query every N samples (for verifying collaboration)
+FORCE_HUAV_EVERY_N=5  # Set to empty "" to disable
+
 # Optional: Limit samples for testing
 MAX_SAMPLES=""  # Empty = all samples
 
@@ -33,6 +36,9 @@ echo "  L-UAV device: $LUAV_DEVICE"
 echo "  Vision tower: $VISION_TOWER"
 echo "  H-UAV address: $HUAV_ADDRESS"
 echo "  Confidence threshold: $CONFIDENCE_THRESHOLD"
+if [ -n "$FORCE_HUAV_EVERY_N" ]; then
+    echo "  🔧 Force H-UAV query: Every $FORCE_HUAV_EVERY_N samples"
+fi
 echo "  Test data: $TEST_DATA"
 echo "  Image dir: $IMAGE_DIR"
 echo "  Output: $OUTPUT_DIR"
@@ -40,6 +46,9 @@ echo ""
 echo "Collaboration Strategy:"
 echo "  - L-UAV performs inference first"
 echo "  - If confidence < $CONFIDENCE_THRESHOLD, request H-UAV memory"
+if [ -n "$FORCE_HUAV_EVERY_N" ]; then
+    echo "  - 🔧 Also force query every $FORCE_HUAV_EVERY_N samples (testing mode)"
+fi
 echo "  - H-UAV provides LoRA-enhanced memory tokens"
 echo "  - L-UAV performs enhanced inference"
 echo ""
@@ -79,6 +88,11 @@ CMD="python hierarchical_uav/eval_sqa_lora_socket.py \
 # Add max_samples if set
 if [ -n "$MAX_SAMPLES" ]; then
     CMD="$CMD --max_samples $MAX_SAMPLES"
+fi
+
+# Add force_huav_every_n if set
+if [ -n "$FORCE_HUAV_EVERY_N" ]; then
+    CMD="$CMD --force_huav_every_n $FORCE_HUAV_EVERY_N"
 fi
 
 # Execute

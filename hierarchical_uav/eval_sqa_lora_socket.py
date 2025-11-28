@@ -311,7 +311,8 @@ class LUAVWithLoRAMemory:
     def evaluate_with_huav(
         self,
         image: Image.Image,
-        question: str
+        question: str,
+        force_huav: bool = False
     ) -> Tuple[str, float, bool]:
         """Evaluate with H-UAV collaboration."""
         self.stats['total_queries'] += 1
@@ -319,9 +320,14 @@ class LUAVWithLoRAMemory:
         # Base inference
         answer_base, confidence_base = self.infer(image, question, use_memory=False)
 
-        # Check if H-UAV help is needed
-        if self.huav_client and confidence_base < self.confidence_threshold:
-            logger.debug(f"Low confidence ({confidence_base:.3f}), requesting H-UAV memory...")
+        # Check if H-UAV help is needed (either low confidence or forced)
+        should_use_huav = force_huav or (confidence_base < self.confidence_threshold)
+
+        if self.huav_client and should_use_huav:
+            if force_huav:
+                logger.info(f"🔧 Forced H-UAV query (sample checkpoint)")
+            else:
+                logger.debug(f"Low confidence ({confidence_base:.3f}), requesting H-UAV memory...")
 
             # Request memory from H-UAV
             memory_tokens = self.huav_client.request_memory(image, question)
@@ -343,10 +349,14 @@ def evaluate_luav_with_huav(
     luav: LUAVWithLoRAMemory,
     test_data: List[Dict],
     image_dir: str,
-    output_path: str
+    output_path: str,
+    force_huav_every_n: int = None
 ):
     """
     Evaluate L-UAV with H-UAV collaboration on SQA task.
+
+    Args:
+        force_huav_every_n: If set, force H-UAV query every N samples (for testing)
     """
     print("=" * 70)
     print("L-UAV + H-UAV Collaboration Evaluation (Socket-based)")
@@ -354,6 +364,8 @@ def evaluate_luav_with_huav(
     print(f"Total samples: {len(test_data)}")
     print(f"H-UAV address: {luav.huav_address}")
     print(f"Confidence threshold: {luav.confidence_threshold}")
+    if force_huav_every_n:
+        print(f"🔧 Forced H-UAV query: Every {force_huav_every_n} samples")
     print("=" * 70)
     print()
 
@@ -386,8 +398,13 @@ def evaluate_luav_with_huav(
             # Clean question
             question_clean = re.sub(r'<bbox>.*?</bbox>', '', question).strip()
 
+            # Determine if we should force H-UAV query
+            force_huav = False
+            if force_huav_every_n and (i % force_huav_every_n == 0):
+                force_huav = True
+
             # Evaluate with H-UAV collaboration
-            answer, confidence, used_huav = luav.evaluate_with_huav(image, question_clean)
+            answer, confidence, used_huav = luav.evaluate_with_huav(image, question_clean, force_huav=force_huav)
 
             # Parse numeric answer
             predicted = parse_numeric_answer(answer)
@@ -511,6 +528,8 @@ def main():
                        help='H-UAV server address (host:port)')
     parser.add_argument('--confidence_threshold', type=float, default=0.5,
                        help='Confidence threshold for H-UAV requests')
+    parser.add_argument('--force_huav_every_n', type=int, default=None,
+                       help='Force H-UAV query every N samples (for testing collaboration)')
 
     # Data
     parser.add_argument('--test_data', type=str, required=True)
@@ -549,7 +568,8 @@ def main():
         luav=luav,
         test_data=test_data,
         image_dir=args.image_dir,
-        output_path=output_path
+        output_path=output_path,
+        force_huav_every_n=args.force_huav_every_n
     )
 
 
