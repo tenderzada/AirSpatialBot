@@ -142,7 +142,8 @@ class HUAVLoRAServer:
             self.total_requests += 1
 
             request_id = request.get('request_id', self.total_requests)
-            logger.debug(f"Processing request #{request_id}")
+            question = request.get('question', 'N/A')[:50]  # First 50 chars
+            logger.info(f"📥 Received request #{request_id} | Question: {question}...")
 
             # 生成memory tokens
             response = self._generate_memory(request)
@@ -152,7 +153,12 @@ class HUAVLoRAServer:
             client_socket.sendall(response_data + b'<END>')
 
             self.successful_requests += 1
-            logger.debug(f"Sent response for request #{request_id}")
+
+            if response.get('success'):
+                memory_shape = response.get('memory_shape', 'unknown')
+                logger.info(f"✅ Request #{request_id} completed | Memory: {memory_shape} | Total: {self.successful_requests}/{self.total_requests}")
+            else:
+                logger.error(f"❌ Request #{request_id} failed | Error: {response.get('error', 'unknown')}")
 
         except Exception as e:
             logger.error(f"Error handling client {client_address}: {e}")
@@ -190,12 +196,15 @@ class HUAVLoRAServer:
 
             # 解码图像
             image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
+            logger.debug(f"  Image decoded: {image.size}")
 
             # 预处理图像
             image_tensor = self.image_processor.preprocess(image, return_tensors='pt')['pixel_values']
             image_tensor = image_tensor.to(self.device).to(torch.float16)
+            logger.debug(f"  Image preprocessed: {image_tensor.shape}")
 
             # 通过LoRA增强的vision tower提取特征
+            logger.info(f"  🧠 Generating memory via LoRA-enhanced vision tower...")
             with torch.inference_mode():
                 # 获取vision tower
                 vision_tower = self.memory_weaver.base_model.get_model().get_vision_tower()
@@ -235,7 +244,7 @@ class HUAVLoRAServer:
                 # 转换为numpy
                 memory_tokens_np = memory_tokens.cpu().float().numpy()
 
-            logger.debug(f"Generated memory tokens: shape {memory_tokens_np.shape}")
+            logger.info(f"  ✓ Memory generated: shape {memory_tokens_np.shape}")
 
             return {
                 'success': True,
