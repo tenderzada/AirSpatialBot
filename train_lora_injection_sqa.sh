@@ -22,6 +22,9 @@ BATCH_SIZE=4
 LOG_INTERVAL=100
 SAVE_INTERVAL=1  # Not used - only best model is saved
 
+# Multi-GPU training (DataParallel)
+GPUS="0 1"  # Use GPU 0 and 1, set to "0" for single GPU
+
 # LoRA injection parameters
 LORA_RANK=8
 LORA_ALPHA=16.0
@@ -66,6 +69,7 @@ echo ""
 echo "Training:"
 echo "  Epochs: $NUM_EPOCHS"
 echo "  Batch size: $BATCH_SIZE"
+echo "  GPUs: $GPUS (DataParallel)"
 echo "  Strategy: Save only the best model"
 echo ""
 echo "============================================================"
@@ -111,6 +115,7 @@ CMD="python hierarchical_uav/train_lora_injection.py \
     --num_memory_tokens $NUM_MEMORY_TOKENS \
     --learning_rate $LEARNING_RATE \
     --weight_decay $WEIGHT_DECAY \
+    --gpus $GPUS \
     --load_8bit"
 
 # Run training

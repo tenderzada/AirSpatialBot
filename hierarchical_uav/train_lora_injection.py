@@ -100,15 +100,18 @@ def train_lora_injection(
     logger.info(f"Target layers: {args.target_layers}")
     logger.info("=" * 70)
 
+    # Get the actual model (unwrap DataParallel if needed)
+    model = memory_weaver.module if hasattr(memory_weaver, 'module') else memory_weaver
+
     # Set up optimizer (only LoRA parameters)
-    lora_params = memory_weaver.get_lora_parameters()
+    lora_params = model.get_lora_parameters()
     optimizer = optim.AdamW(lora_params, lr=args.learning_rate, weight_decay=args.weight_decay)
 
     logger.info(f"Optimizer: AdamW with lr={args.learning_rate}")
     logger.info(f"Trainable parameters: {sum(p.numel() for p in lora_params):,}")
 
     # Get total parameter counts
-    total, trainable = memory_weaver.get_trainable_parameters_count()
+    total, trainable = model.get_trainable_parameters_count()
     logger.info(f"Total parameters: {total:,}")
     logger.info(f"Trainable ratio: {trainable/total*100:.2f}%")
     logger.info("=" * 70)
@@ -262,7 +265,8 @@ def train_lora_injection(
             best_loss = avg_epoch_loss
             best_epoch = epoch + 1
             logger.info(f"\n🏆 New best model! Loss: {best_loss:.4f}")
-            save_checkpoint(memory_weaver, args.output_dir, 'best')
+            # Save unwrapped model (in case of DataParallel)
+            save_checkpoint(model, args.output_dir, 'best')
             logger.info(f"✓ Saved best checkpoint")
         else:
             logger.info(f"\nCurrent loss: {avg_epoch_loss:.4f} (Best: {best_loss:.4f} @ Epoch {best_epoch})")
@@ -355,7 +359,9 @@ def main():
 
     # Device
     parser.add_argument('--device', type=str, default='cuda:0',
-                       help='Device to use')
+                       help='Primary device to use')
+    parser.add_argument('--gpus', type=int, nargs='+', default=None,
+                       help='GPU IDs for DataParallel (e.g., --gpus 0 1)')
 
     # Training parameters
     parser.add_argument('--num_epochs', type=int, default=10,
@@ -408,8 +414,19 @@ def main():
         lora_rank=args.lora_rank,
         target_layers=args.target_layers,
         load_8bit=args.load_8bit,
-        load_4bit=args.load_4bit
+        load_4bit=args.load_4bit,
+        vision_tower=args.vision_tower
     )
+
+    # Enable DataParallel if multiple GPUs specified
+    if args.gpus and len(args.gpus) > 1:
+        logger.info(f"Using DataParallel with GPUs: {args.gpus}")
+        memory_weaver = torch.nn.DataParallel(
+            memory_weaver,
+            device_ids=args.gpus,
+            output_device=args.gpus[0]
+        )
+        logger.info(f"✓ DataParallel enabled on {len(args.gpus)} GPUs")
 
     # Train
     logger.info("Starting training...")
