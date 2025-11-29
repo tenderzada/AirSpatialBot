@@ -43,11 +43,33 @@ def load_model(args):
 
     # Load LLaVA model
     print(f"\nLoading LLaVA model from {args.model_path}...")
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_path,
-        torch_dtype=torch.bfloat16,
-        device_map='auto'
-    )
+
+    # Load LLaVA model (handle both LLaVA and standard LLM)
+    try:
+        # Try loading as LLaVA first
+        from transformers import LlavaForConditionalGeneration
+        model = LlavaForConditionalGeneration.from_pretrained(
+            args.model_path,
+            torch_dtype=torch.bfloat16,
+            device_map='auto'
+        )
+        print("Loaded as LLaVA model")
+        # For LLaVA, we work with the language model part
+        if hasattr(model, 'language_model'):
+            model = model.language_model
+            print("Using language_model component")
+    except Exception as e:
+        print(f"LLaVA loading failed ({e}), trying AutoModel...")
+        # Fallback to AutoModel
+        from transformers import AutoModel
+        model = AutoModel.from_pretrained(
+            args.model_path,
+            torch_dtype=torch.bfloat16,
+            device_map='auto',
+            trust_remote_code=True
+        )
+        print("Loaded with AutoModel")
+
     model.eval()
 
     processor = AutoProcessor.from_pretrained(args.model_path)

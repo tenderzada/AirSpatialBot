@@ -182,11 +182,32 @@ def train_memgen_weaver(args):
     # Load base model and tokenizer
     print(f"\nLoading base model from {args.model_path}...")
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-    base_model = AutoModelForCausalLM.from_pretrained(
-        args.model_path,
-        torch_dtype=torch.bfloat16,
-        device_map='auto'
-    )
+
+    # Load LLaVA model (handle both LLaVA and standard LLM)
+    try:
+        # Try loading as LLaVA first
+        from transformers import LlavaForConditionalGeneration
+        base_model = LlavaForConditionalGeneration.from_pretrained(
+            args.model_path,
+            torch_dtype=torch.bfloat16,
+            device_map='auto'
+        )
+        print("Loaded as LLaVA model")
+        # For LLaVA, we work with the language model part
+        if hasattr(base_model, 'language_model'):
+            base_model = base_model.language_model
+            print("Using language_model component")
+    except Exception as e:
+        print(f"LLaVA loading failed ({e}), trying AutoModel...")
+        # Fallback to AutoModel
+        from transformers import AutoModel
+        base_model = AutoModel.from_pretrained(
+            args.model_path,
+            torch_dtype=torch.bfloat16,
+            device_map='auto',
+            trust_remote_code=True
+        )
+        print("Loaded with AutoModel")
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
