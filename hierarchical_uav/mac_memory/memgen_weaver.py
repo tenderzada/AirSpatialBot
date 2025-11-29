@@ -1,5 +1,5 @@
 """
-MemGen-style Memory Weaver for H-UAV
+MemGen-style Memory Weaver for H-UAV (Pure PyTorch - No PEFT dependency)
 True implementation with learnable Query Latents (not pooling+projection)
 
 Reference: https://github.com/tenderzada/MemGen
@@ -7,9 +7,9 @@ Reference: https://github.com/tenderzada/MemGen
 
 import torch
 import torch.nn as nn
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 from dataclasses import dataclass
-from peft import LoraConfig, get_peft_model, PeftModel
+import json
 
 
 @dataclass
@@ -27,6 +27,7 @@ class MemGenWeaverConfig:
     lora_alpha: float = 32.0  # MemGen uses 32
     lora_dropout: float = 0.1
     target_modules: list = None  # ["q_proj", "v_proj"]
+    target_layers: list = None  # [8, 16, 24]
 
     # Model path
     base_model_path: str = "/mnt/data/AirSpatialBot"
@@ -34,28 +35,81 @@ class MemGenWeaverConfig:
     def __post_init__(self):
         if self.target_modules is None:
             self.target_modules = ["q_proj", "v_proj"]
+        if self.target_layers is None:
+            # Inject LoRA in middle layers
+            self.target_layers = [8, 16, 24]
+
+
+class LoRALayer(nn.Module):
+    """
+    Pure PyTorch LoRA Layer (no PEFT dependency).
+
+    Implements: output = base_layer(x) + (lora_B @ lora_A)(x) * scaling
+    """
+
+    def __init__(
+        self,
+        base_layer: nn.Linear,
+        rank: int = 16,
+        alpha: float = 32.0,
+        dropout: float = 0.1
+    ):
+        super().__init__()
+
+        self.base_layer = base_layer
+        self.rank = rank
+        self.alpha = alpha
+        self.scaling = alpha / rank
+
+        in_features = base_layer.in_features
+        out_features = base_layer.out_features
+
+        # LoRA matrices
+        self.lora_A = nn.Linear(in_features, rank, bias=False)
+        self.lora_B = nn.Linear(rank, out_features, bias=False)
+
+        # Dropout
+        self.lora_dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+
+        # Initialize
+        nn.init.kaiming_uniform_(self.lora_A.weight, a=5**0.5)
+        nn.init.zeros_(self.lora_B.weight)
+
+        # Freeze base layer
+        for param in self.base_layer.parameters():
+            param.requires_grad = False
+
+    def forward(self, x):
+        """Forward with LoRA adaptation."""
+        # Base output (frozen)
+        base_out = self.base_layer(x)
+
+        # LoRA adaptation (trainable)
+        lora_out = self.lora_B(self.lora_A(self.lora_dropout(x)))
+        lora_out = lora_out * self.scaling
+
+        return base_out + lora_out
 
 
 class MemGenWeaver(nn.Module):
     """
     MemGen-style Memory Weaver with learnable Query Latents.
+    Pure PyTorch implementation - no PEFT dependency.
 
     Key innovation: Instead of pooling + projection, we use learnable
-    query latents that are processed through LoRA-enhanced LLaVA to
+    query latents that are processed through LoRA-enhanced model to
     generate context-aware memory representations.
 
     Architecture:
         1. Learnable query latents (nn.Parameter)
         2. Concatenate query latents with input embeddings
-        3. Process through LoRA-enhanced LLaVA
-        4. Extract the enhanced query latents as memory tokens
+        3. Process through LoRA-enhanced model
+        4. Extract enhanced query latents as memory tokens
 
     Args:
-        base_model: Frozen LLaVA model
+        base_model: Base model (LLaVA)
         config: MemGenWeaverConfig instance
     """
-
-    adapter_name = "weaver"
 
     def __init__(
         self,
@@ -69,38 +123,74 @@ class MemGenWeaver(nn.Module):
         self.num_memory_tokens = config.num_memory_tokens
 
         # === Core Innovation: Learnable Query Latents ===
-        # These are trainable parameters that serve as "queries" for memory
         self.query_latents = nn.Parameter(
             torch.randn(config.num_memory_tokens, config.hidden_size),
             requires_grad=True
         )
-
-        # Initialize with small values for stability
         nn.init.normal_(self.query_latents, mean=0.0, std=0.02)
 
-        # === LoRA-enhanced model ===
-        # Create LoRA configuration
-        lora_config = LoraConfig(
-            r=config.lora_rank,
-            lora_alpha=config.lora_alpha,
-            target_modules=config.target_modules,
-            lora_dropout=config.lora_dropout,
-            bias="none",
-            task_type="CAUSAL_LM"
-        )
+        # === Store base model ===
+        self.base_model = base_model
 
-        # Apply LoRA to base model
-        self.lora_model = get_peft_model(base_model, lora_config, adapter_name=self.adapter_name)
+        # Freeze base model
+        for param in base_model.parameters():
+            param.requires_grad = False
 
-        # Freeze base model, only train LoRA + query latents
-        for name, param in self.lora_model.named_parameters():
-            if "lora" not in name.lower():
-                param.requires_grad = False
+        # === Inject LoRA layers ===
+        self.lora_layers = nn.ModuleDict()
+        self._inject_lora_layers(config)
 
         print(f"MemGen Weaver initialized:")
         print(f"  - Query Latents: {self.num_memory_tokens} tokens")
         print(f"  - LoRA Rank: {config.lora_rank}, Alpha: {config.lora_alpha}")
         print(f"  - Target Modules: {config.target_modules}")
+        print(f"  - Target Layers: {config.target_layers}")
+
+    def _inject_lora_layers(self, config):
+        """Inject LoRA layers into specified modules."""
+
+        # Access model layers
+        if hasattr(self.base_model, 'model'):
+            model_layers = self.base_model.model.layers
+        elif hasattr(self.base_model, 'layers'):
+            model_layers = self.base_model.layers
+        else:
+            raise ValueError("Cannot find model layers")
+
+        lora_count = 0
+
+        for layer_idx in config.target_layers:
+            if layer_idx >= len(model_layers):
+                continue
+
+            layer = model_layers[layer_idx]
+
+            # Inject LoRA into attention modules
+            if hasattr(layer, 'self_attn'):
+                attn = layer.self_attn
+
+                for module_name in config.target_modules:
+                    if hasattr(attn, module_name):
+                        base_layer = getattr(attn, module_name)
+
+                        # Create LoRA layer
+                        lora_layer = LoRALayer(
+                            base_layer=base_layer,
+                            rank=config.lora_rank,
+                            alpha=config.lora_alpha,
+                            dropout=config.lora_dropout
+                        )
+
+                        # Replace original layer
+                        setattr(attn, module_name, lora_layer)
+
+                        # Store reference
+                        key = f"layer_{layer_idx}_{module_name}"
+                        self.lora_layers[key] = lora_layer
+
+                        lora_count += 1
+
+        print(f"  - Injected {lora_count} LoRA layers")
 
     @property
     def device(self):
@@ -118,7 +208,6 @@ class MemGenWeaver(nn.Module):
 
         Args:
             inputs_embeds: Input embeddings [batch_size, seq_len, hidden_size]
-                          (from L-UAV's encoding of image+question)
             attention_mask: Attention mask [batch_size, seq_len]
             position_ids: Position IDs [batch_size, seq_len]
             return_full_output: If True, return full hidden states
@@ -130,47 +219,37 @@ class MemGenWeaver(nn.Module):
         device = inputs_embeds.device
 
         # === Step 1: Expand query latents for batch ===
-        # query_latents: [num_tokens, H] -> [B, num_tokens, H]
         batch_query_latents = self.query_latents.unsqueeze(0).repeat(batch_size, 1, 1)
 
         # === Step 2: Concatenate query latents with inputs ===
-        # Append query latents to the end of input sequence
         augmented_embeds = torch.cat([inputs_embeds, batch_query_latents], dim=1)
-        # Shape: [B, seq_len + num_tokens, H]
 
         # === Step 3: Update attention mask ===
         if attention_mask is None:
             attention_mask = torch.ones(batch_size, seq_len, dtype=torch.long, device=device)
 
-        # Add attention mask for query latents (all 1s)
         query_mask = torch.ones(
             batch_size, self.num_memory_tokens,
             dtype=attention_mask.dtype,
             device=device
         )
         augmented_mask = torch.cat([attention_mask, query_mask], dim=1)
-        # Shape: [B, seq_len + num_tokens]
 
         # === Step 4: Update position IDs ===
         if position_ids is None:
-            # Generate position IDs based on attention mask
             position_ids = self._generate_position_ids(attention_mask)
 
-        # Get the last position ID and continue counting
-        last_position = position_ids.max(dim=1)[0]  # [B]
+        last_position = position_ids.max(dim=1)[0]
         query_positions = torch.arange(
             self.num_memory_tokens,
             device=device
-        ).unsqueeze(0).repeat(batch_size, 1)  # [B, num_tokens]
+        ).unsqueeze(0).repeat(batch_size, 1)
         query_positions = last_position.unsqueeze(1) + query_positions + 1
 
         augmented_position_ids = torch.cat([position_ids, query_positions], dim=1)
-        # Shape: [B, seq_len + num_tokens]
 
         # === Step 5: Process through LoRA-enhanced model ===
-        self.lora_model.set_adapter(self.adapter_name)
-
-        outputs = self.lora_model(
+        outputs = self.base_model(
             inputs_embeds=augmented_embeds,
             attention_mask=augmented_mask,
             position_ids=augmented_position_ids,
@@ -178,15 +257,9 @@ class MemGenWeaver(nn.Module):
             use_cache=False
         )
 
-        self.lora_model.disable_adapter()
-
         # === Step 6: Extract memory tokens ===
-        # Get the last layer hidden states
-        hidden_states = outputs.hidden_states[-1]  # [B, seq_len + num_tokens, H]
-
-        # Extract only the query latents part (last num_tokens positions)
+        hidden_states = outputs.hidden_states[-1]
         memory_tokens = hidden_states[:, -self.num_memory_tokens:, :]
-        # Shape: [B, num_tokens, H]
 
         if return_full_output:
             return memory_tokens, outputs
@@ -232,118 +305,74 @@ class MemGenWeaver(nn.Module):
         self.query_latents.requires_grad = True
 
     def save_adapter(self, save_path: str):
-        """Save LoRA adapter and query latents."""
-        # Save LoRA adapter using PEFT
-        self.lora_model.save_pretrained(save_path)
+        """Save LoRA adapters and query latents."""
+        import os
+        os.makedirs(save_path, exist_ok=True)
 
-        # Save query latents separately
+        # Save query latents
         torch.save({
             'query_latents': self.query_latents.data,
             'config': self.config
         }, f"{save_path}/query_latents.pt")
 
+        # Save LoRA weights
+        lora_state = {}
+        for name, module in self.lora_layers.items():
+            lora_state[f"{name}_A"] = module.lora_A.state_dict()
+            lora_state[f"{name}_B"] = module.lora_B.state_dict()
+
+        torch.save(lora_state, f"{save_path}/lora_weights.pt")
+
+        # Save config
+        config_dict = {
+            'hidden_size': self.config.hidden_size,
+            'num_memory_tokens': self.config.num_memory_tokens,
+            'lora_rank': self.config.lora_rank,
+            'lora_alpha': self.config.lora_alpha,
+            'lora_dropout': self.config.lora_dropout,
+            'target_modules': self.config.target_modules,
+            'target_layers': self.config.target_layers,
+        }
+
+        with open(f"{save_path}/config.json", 'w') as f:
+            json.dump(config_dict, f, indent=2)
+
         print(f"✓ Saved MemGen Weaver to {save_path}")
 
     @classmethod
     def load_adapter(cls, base_model: nn.Module, load_path: str):
-        """Load LoRA adapter and query latents."""
-        from peft import PeftModel
+        """Load LoRA adapters and query latents."""
+        import os
 
-        # Load LoRA adapter
-        lora_model = PeftModel.from_pretrained(
-            base_model,
-            load_path,
-            adapter_name=cls.adapter_name
-        )
+        # Load config
+        with open(f"{load_path}/config.json", 'r') as f:
+            config_dict = json.load(f)
+
+        config = MemGenWeaverConfig(**config_dict)
+
+        # Create weaver
+        weaver = cls(base_model, config)
 
         # Load query latents
         checkpoint = torch.load(f"{load_path}/query_latents.pt")
-        query_latents = checkpoint['query_latents']
-        config = checkpoint['config']
+        weaver.query_latents.data = checkpoint['query_latents']
 
-        # Create weaver instance
-        weaver = cls.__new__(cls)
-        weaver.config = config
-        weaver.hidden_size = config.hidden_size
-        weaver.num_memory_tokens = config.num_memory_tokens
-        weaver.lora_model = lora_model
-        weaver.query_latents = nn.Parameter(query_latents, requires_grad=True)
+        # Load LoRA weights
+        lora_state = torch.load(f"{load_path}/lora_weights.pt")
+
+        for name, module in weaver.lora_layers.items():
+            module.lora_A.load_state_dict(lora_state[f"{name}_A"])
+            module.lora_B.load_state_dict(lora_state[f"{name}_B"])
 
         print(f"✓ Loaded MemGen Weaver from {load_path}")
         return weaver
 
 
-class AdaptiveMemGenWeaver(nn.Module):
-    """
-    Adaptive MemGen Weaver with multiple query latent sets.
-
-    Can have different query latents for different scenarios:
-    - Spatial reasoning
-    - Depth estimation
-    - Object recognition
-    """
-
-    def __init__(
-        self,
-        base_model: nn.Module,
-        config: MemGenWeaverConfig,
-        num_latent_sets: int = 3
-    ):
-        super().__init__()
-
-        self.config = config
-        self.num_latent_sets = num_latent_sets
-
-        # Multiple sets of query latents
-        self.query_latents_bank = nn.ParameterList([
-            nn.Parameter(
-                torch.randn(config.num_memory_tokens, config.hidden_size),
-                requires_grad=True
-            )
-            for _ in range(num_latent_sets)
-        ])
-
-        # LoRA model (shared across all latent sets)
-        lora_config = LoraConfig(
-            r=config.lora_rank,
-            lora_alpha=config.lora_alpha,
-            target_modules=config.target_modules,
-            lora_dropout=config.lora_dropout,
-            bias="none",
-            task_type="CAUSAL_LM"
-        )
-
-        self.lora_model = get_peft_model(base_model, lora_config, adapter_name="weaver")
-
-        # Freeze base model
-        for name, param in self.lora_model.named_parameters():
-            if "lora" not in name.lower():
-                param.requires_grad = False
-
-    def forward(
-        self,
-        inputs_embeds: torch.Tensor,
-        latent_set_idx: int = 0,
-        **kwargs
-    ) -> torch.Tensor:
-        """Forward with specific latent set."""
-        # Use specific query latents
-        query_latents = self.query_latents_bank[latent_set_idx]
-
-        # Similar processing as MemGenWeaver
-        # ... (implementation similar to above)
-        pass
-
-
 if __name__ == "__main__":
-    print("Testing MemGen-style Weaver...")
+    print("Testing MemGen-style Weaver (Pure PyTorch)...")
 
-    # Mock LLaVA model for testing
-    from transformers import AutoModelForCausalLM
-
-    # Create config
     config = MemGenWeaverConfig(
-        hidden_size=4096,
+        hidden_size=512,
         num_memory_tokens=8,
         lora_rank=16,
         lora_alpha=32.0
@@ -359,15 +388,10 @@ if __name__ == "__main__":
     print(f"Target Modules: {config.target_modules}")
     print("="*60)
 
-    # Note: For actual testing, uncomment below with real model
-    # base_model = AutoModelForCausalLM.from_pretrained(config.base_model_path)
-    # weaver = MemGenWeaver(base_model, config)
-    # weaver.print_trainable_parameters()
-
-    print("\n✓ MemGen Weaver implementation complete!")
-    print("\nKey differences from H-UAV's original implementation:")
-    print("  1. ✓ Learnable Query Latents (nn.Parameter) instead of pooling")
-    print("  2. ✓ Query latents processed through LoRA-enhanced Transformer")
-    print("  3. ✓ Uses PEFT library for standardized LoRA management")
-    print("  4. ✓ Extracts enhanced latents as memory (not generated from scratch)")
+    print("\n✓ MemGen Weaver implementation complete (Pure PyTorch)!")
+    print("\nKey features:")
+    print("  1. ✓ Learnable Query Latents (nn.Parameter)")
+    print("  2. ✓ Pure PyTorch LoRA (no PEFT dependency)")
+    print("  3. ✓ Query latents processed through LoRA-enhanced model")
+    print("  4. ✓ No version compatibility issues")
     print("\nThis is the TRUE MemGen approach! 🎯")

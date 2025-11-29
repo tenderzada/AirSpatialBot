@@ -19,7 +19,6 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import get_peft_model
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -200,7 +199,8 @@ def train_memgen_weaver(args):
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
-        target_modules=["q_proj", "v_proj"]
+        target_modules=["q_proj", "v_proj"],
+        target_layers=[8, 16, 24]  # Inject LoRA in these layers
     )
 
     weaver = MemGenWeaver(base_model, config)
