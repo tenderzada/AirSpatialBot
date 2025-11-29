@@ -11,7 +11,7 @@ echo "============================================================"
 # Configuration
 MODEL_PATH="/mnt/data/AirSpatialBot"
 VISION_TOWER="/mnt/data/clip-vit-large-patch14-336"
-LORA_WEIGHTS="./outputs/lora_injection_sqa/lora_adapters_best.pt"  # 10-epoch best checkpoint
+LORA_WEIGHTS="./outputs/lora_injection_sqa/lora_adapters_epochbest.pt"  # 10-epoch best checkpoint
 DEVICE="cuda:0"
 
 # LoRA config
