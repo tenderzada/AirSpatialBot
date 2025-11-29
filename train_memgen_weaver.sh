@@ -2,6 +2,11 @@
 
 # Training script for MemGen-style Memory Weaver
 # This trains the learnable query latents and LoRA adapters
+# Features:
+# - Validation split (10%)
+# - Best checkpoint saving (based on validation loss)
+# - Loss curve plotting
+# - TensorBoard logging
 
 echo "=========================================="
 echo "Training MemGen-style Memory Weaver"
@@ -23,12 +28,14 @@ NUM_EPOCHS=20
 BATCH_SIZE=4
 LEARNING_RATE=1e-5
 WEIGHT_DECAY=0.01
+VAL_SPLIT=0.1  # 10% for validation
 
 # Run training
 python hierarchical_uav/train_memgen_weaver.py \
     --model_path $MODEL_PATH \
     --train_data $TRAIN_DATA \
     --output_dir $OUTPUT_DIR \
+    --val_split $VAL_SPLIT \
     --num_memory_tokens $NUM_MEMORY_TOKENS \
     --lora_rank $LORA_RANK \
     --lora_alpha $LORA_ALPHA \
@@ -36,12 +43,16 @@ python hierarchical_uav/train_memgen_weaver.py \
     --num_epochs $NUM_EPOCHS \
     --batch_size $BATCH_SIZE \
     --learning_rate $LEARNING_RATE \
-    --weight_decay $WEIGHT_DECAY \
-    --log_interval 10 \
-    --save_interval 1
+    --weight_decay $WEIGHT_DECAY
 
 echo ""
 echo "=========================================="
 echo "Training Complete!"
-echo "Checkpoint saved to: $OUTPUT_DIR"
+echo "=========================================="
+echo "Best checkpoint saved to: $OUTPUT_DIR/best_checkpoint"
+echo "Loss curves: $OUTPUT_DIR/loss_curves.png"
+echo "TensorBoard logs: $OUTPUT_DIR/tensorboard"
+echo ""
+echo "View TensorBoard:"
+echo "  tensorboard --logdir=$OUTPUT_DIR/tensorboard"
 echo "=========================================="

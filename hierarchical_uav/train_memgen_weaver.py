@@ -1,8 +1,11 @@
 """
 Training script for MemGen-style Memory Weaver
 
-This trains the learnable query latents and LoRA adapters to generate
-context-aware memory tokens for H-UAV.
+Features:
+- Validation split
+- Best checkpoint saving (based on validation loss)
+- Loss curve plotting
+- TensorBoard logging
 """
 
 import os
@@ -11,8 +14,10 @@ import json
 import argparse
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import get_peft_model
 
@@ -53,8 +58,6 @@ class MemoryWeaverDataset(Dataset):
         answer = sample.get('answer', sample.get('conversations', [{}])[1].get('value', ''))
 
         # Tokenize
-        # For training, we use question as input to generate memory,
-        # then evaluate if the enhanced representation helps answer generation
         question_ids = self.tokenizer(
             question,
             max_length=self.max_length,
@@ -80,6 +83,86 @@ class MemoryWeaverDataset(Dataset):
         }
 
 
+def validate(weaver, base_model, val_loader, device):
+    """Run validation and return average loss."""
+    weaver.eval()
+    total_loss = 0.0
+    num_batches = 0
+
+    with torch.no_grad():
+        for batch in tqdm(val_loader, desc="Validating", leave=False):
+            # Move to device
+            question_ids = batch['question_input_ids'].to(device)
+            question_mask = batch['question_attention_mask'].to(device)
+            answer_ids = batch['answer_input_ids'].to(device)
+
+            # Get input embeddings
+            question_embeds = base_model.get_input_embeddings()(question_ids)
+
+            # Generate memory tokens
+            memory_tokens = weaver(
+                inputs_embeds=question_embeds,
+                attention_mask=question_mask
+            )
+
+            # Enhanced input for answer generation
+            answer_embeds = base_model.get_input_embeddings()(answer_ids)
+            batch_size = memory_tokens.size(0)
+            enhanced_embeds = torch.cat([memory_tokens, answer_embeds], dim=1)
+
+            # Update attention mask
+            memory_mask = torch.ones(
+                batch_size, memory_tokens.size(1),
+                dtype=question_mask.dtype,
+                device=device
+            )
+            enhanced_mask = torch.cat([memory_mask, batch['answer_attention_mask'].to(device)], dim=1)
+
+            # Forward through base model
+            outputs = base_model(
+                inputs_embeds=enhanced_embeds,
+                attention_mask=enhanced_mask,
+                labels=answer_ids
+            )
+
+            total_loss += outputs.loss.item()
+            num_batches += 1
+
+    weaver.train()
+    return total_loss / num_batches if num_batches > 0 else float('inf')
+
+
+def plot_losses(train_losses, val_losses, save_path):
+    """Plot and save loss curves."""
+    plt.figure(figsize=(10, 6))
+
+    epochs = range(1, len(train_losses) + 1)
+
+    plt.plot(epochs, train_losses, 'b-', label='Training Loss', linewidth=2)
+    plt.plot(epochs, val_losses, 'r-', label='Validation Loss', linewidth=2)
+
+    plt.xlabel('Epoch', fontsize=12)
+    plt.ylabel('Loss', fontsize=12)
+    plt.title('MemGen Weaver Training Loss Curves', fontsize=14, fontweight='bold')
+    plt.legend(fontsize=10)
+    plt.grid(True, alpha=0.3)
+
+    # Add best validation loss annotation
+    best_val_epoch = val_losses.index(min(val_losses)) + 1
+    best_val_loss = min(val_losses)
+    plt.axvline(x=best_val_epoch, color='g', linestyle='--', alpha=0.5)
+    plt.text(best_val_epoch, best_val_loss,
+             f'Best: {best_val_loss:.4f}\nEpoch {best_val_epoch}',
+             ha='left', va='bottom', fontsize=9,
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+    print(f"\n✓ Loss curve saved to {save_path}")
+
+
 def train_memgen_weaver(args):
     """Train MemGen Weaver."""
 
@@ -90,6 +173,12 @@ def train_memgen_weaver(args):
     # === Setup ===
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"\nDevice: {device}")
+
+    # Create output directory
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    # Setup TensorBoard
+    writer = SummaryWriter(log_dir=os.path.join(args.output_dir, 'tensorboard'))
 
     # Load base model and tokenizer
     print(f"\nLoading base model from {args.model_path}...")
@@ -120,19 +209,39 @@ def train_memgen_weaver(args):
     print("\nTrainable parameters:")
     weaver.print_trainable_parameters()
 
-    # Load dataset
-    print(f"\nLoading training data from {args.train_data}...")
-    train_dataset = MemoryWeaverDataset(
+    # Load full dataset
+    print(f"\nLoading data from {args.train_data}...")
+    full_dataset = MemoryWeaverDataset(
         args.train_data,
         tokenizer,
         base_model,
         max_length=args.max_length
     )
 
+    # Split into train and validation
+    val_size = int(len(full_dataset) * args.val_split)
+    train_size = len(full_dataset) - val_size
+
+    train_dataset, val_dataset = random_split(
+        full_dataset,
+        [train_size, val_size],
+        generator=torch.Generator().manual_seed(42)
+    )
+
+    print(f"Train samples: {len(train_dataset)}")
+    print(f"Validation samples: {len(val_dataset)}")
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
+        num_workers=4
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
         num_workers=4
     )
 
@@ -150,16 +259,25 @@ def train_memgen_weaver(args):
     print(f"Epochs: {args.num_epochs}")
     print(f"Batch Size: {args.batch_size}")
     print(f"Learning Rate: {args.learning_rate}")
+    print(f"Validation Split: {args.val_split}")
     print(f"{'='*70}\n")
 
     weaver.train()
     global_step = 0
+    best_val_loss = float('inf')
+    best_epoch = 0
+
+    # Loss tracking
+    train_losses = []
+    val_losses = []
 
     for epoch in range(args.num_epochs):
-        print(f"\nEpoch {epoch + 1}/{args.num_epochs}")
-        epoch_loss = 0.0
+        print(f"\n{'='*70}")
+        print(f"Epoch {epoch + 1}/{args.num_epochs}")
+        print(f"{'='*70}")
 
-        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}")
+        epoch_loss = 0.0
+        progress_bar = tqdm(train_loader, desc=f"Training")
 
         for batch_idx, batch in enumerate(progress_bar):
             # Move to device
@@ -179,10 +297,7 @@ def train_memgen_weaver(args):
             )
 
             # 3. Prepare enhanced input for answer generation
-            # Concatenate memory tokens with answer input
             answer_embeds = base_model.get_input_embeddings()(answer_ids)
-
-            # For training, we prepend memory tokens to answer sequence
             batch_size = memory_tokens.size(0)
             enhanced_embeds = torch.cat([memory_tokens, answer_embeds], dim=1)
 
@@ -198,7 +313,7 @@ def train_memgen_weaver(args):
             outputs = base_model(
                 inputs_embeds=enhanced_embeds,
                 attention_mask=enhanced_mask,
-                labels=answer_ids  # Only compute loss on answer part
+                labels=answer_ids
             )
 
             loss = outputs.loss
@@ -225,31 +340,77 @@ def train_memgen_weaver(args):
                 'avg_loss': f'{epoch_loss / (batch_idx + 1):.4f}'
             })
 
-            # Log
-            if global_step % args.log_interval == 0:
-                print(f"\nStep {global_step}: loss = {loss.item():.4f}")
+            # TensorBoard logging
+            writer.add_scalar('Train/Loss', loss.item(), global_step)
 
-        # Epoch summary
-        avg_epoch_loss = epoch_loss / len(train_loader)
-        print(f"\nEpoch {epoch + 1} Summary:")
-        print(f"  Average Loss: {avg_epoch_loss:.4f}")
+        # Epoch training summary
+        avg_train_loss = epoch_loss / len(train_loader)
+        train_losses.append(avg_train_loss)
 
-        # Save checkpoint
-        if (epoch + 1) % args.save_interval == 0:
-            save_path = os.path.join(args.output_dir, f"checkpoint-epoch-{epoch+1}")
-            os.makedirs(save_path, exist_ok=True)
-            weaver.save_adapter(save_path)
-            print(f"  ✓ Saved checkpoint to {save_path}")
+        print(f"\n📊 Epoch {epoch + 1} Training Summary:")
+        print(f"  Average Training Loss: {avg_train_loss:.4f}")
 
-    # Final save
-    final_path = os.path.join(args.output_dir, "final")
-    os.makedirs(final_path, exist_ok=True)
-    weaver.save_adapter(final_path)
+        # Validation
+        print(f"\n🔍 Running validation...")
+        val_loss = validate(weaver, base_model, val_loader, device)
+        val_losses.append(val_loss)
+
+        print(f"  Validation Loss: {val_loss:.4f}")
+
+        # TensorBoard logging
+        writer.add_scalar('Epoch/Train_Loss', avg_train_loss, epoch)
+        writer.add_scalar('Epoch/Val_Loss', val_loss, epoch)
+
+        # Save best checkpoint
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_epoch = epoch + 1
+
+            best_path = os.path.join(args.output_dir, "best_checkpoint")
+            os.makedirs(best_path, exist_ok=True)
+            weaver.save_adapter(best_path)
+
+            # Save metadata
+            with open(os.path.join(best_path, 'metadata.json'), 'w') as f:
+                json.dump({
+                    'epoch': epoch + 1,
+                    'train_loss': avg_train_loss,
+                    'val_loss': val_loss,
+                    'global_step': global_step
+                }, f, indent=2)
+
+            print(f"\n  ✅ New best checkpoint saved! (val_loss: {val_loss:.4f})")
+
+        print(f"\n  📌 Best so far: Epoch {best_epoch}, Val Loss: {best_val_loss:.4f}")
+
+    # Training complete
+    print(f"\n{'='*70}")
+    print("Training Complete!")
+    print(f"{'='*70}")
+    print(f"Best Validation Loss: {best_val_loss:.4f} (Epoch {best_epoch})")
+    print(f"Best checkpoint: {os.path.join(args.output_dir, 'best_checkpoint')}")
+
+    # Plot loss curves
+    loss_plot_path = os.path.join(args.output_dir, 'loss_curves.png')
+    plot_losses(train_losses, val_losses, loss_plot_path)
+
+    # Save loss history
+    loss_history = {
+        'train_losses': train_losses,
+        'val_losses': val_losses,
+        'best_epoch': best_epoch,
+        'best_val_loss': best_val_loss
+    }
+
+    with open(os.path.join(args.output_dir, 'loss_history.json'), 'w') as f:
+        json.dump(loss_history, f, indent=2)
+
+    print(f"\n✓ Loss history saved to {args.output_dir}/loss_history.json")
+
+    # Close TensorBoard writer
+    writer.close()
 
     print(f"\n{'='*70}")
-    print(f"Training Complete!")
-    print(f"Final model saved to: {final_path}")
-    print(f"{'='*70}")
 
 
 def main():
@@ -262,6 +423,8 @@ def main():
     # Data arguments
     parser.add_argument('--train_data', type=str, required=True,
                         help='Path to training data (JSONL format)')
+    parser.add_argument('--val_split', type=float, default=0.1,
+                        help='Validation split ratio')
     parser.add_argument('--max_length', type=int, default=512,
                         help='Maximum sequence length')
 
@@ -288,10 +451,6 @@ def main():
     # Logging and saving
     parser.add_argument('--output_dir', type=str, default='./outputs/memgen_weaver',
                         help='Output directory for checkpoints')
-    parser.add_argument('--log_interval', type=int, default=10,
-                        help='Logging interval (steps)')
-    parser.add_argument('--save_interval', type=int, default=1,
-                        help='Save interval (epochs)')
 
     args = parser.parse_args()
 
