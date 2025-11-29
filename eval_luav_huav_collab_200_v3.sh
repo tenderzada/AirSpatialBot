@@ -29,7 +29,7 @@ TARGET_LAYERS="8 16 24"
 # H-UAV connection
 HUAV_ADDRESS="localhost:50052"  # V3 uses port 50052
 CONFIDENCE_THRESHOLD=0.5
-FORCE_HUAV_EVERY_N=5  # Force H-UAV query every 5 samples
+FORCE_HUAV_EVERY_N=2  # Force H-UAV query every 5 samples
 
 # Data
 MAX_SAMPLES=200  # First 200 samples

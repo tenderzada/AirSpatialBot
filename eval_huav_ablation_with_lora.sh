@@ -11,7 +11,7 @@ echo "============================================================"
 # Configuration
 MODEL_PATH="/mnt/data/AirSpatialBot"
 VISION_TOWER="/mnt/data/clip-vit-large-patch14-336"
-LORA_WEIGHTS="./outputs/lora_injection_sqa/lora_adapters_best.pt"
+LORA_WEIGHTS="./outputs/lora_injection_sqa_3epoch/lora_adapters_epochfinal.pt"
 TEST_DATA="/mnt/data/AirSpatial/airspatial_sqa_test.jsonl"
 IMAGE_DIR="/mnt/data/AirSpatial/images"
 OUTPUT_DIR="./outputs/ablation_huav_with_lora"
@@ -22,7 +22,7 @@ LORA_RANK=8
 TARGET_LAYERS="8 16 24"
 
 # Ablation: Only first 100 samples
-MAX_SAMPLES=100
+MAX_SAMPLES=200
 
 echo ""
 echo "🧪 Ablation Study Configuration:"
