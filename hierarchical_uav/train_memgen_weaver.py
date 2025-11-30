@@ -52,9 +52,26 @@ class MemoryWeaverDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.data[idx]
 
-        # Get question and answer
-        question = sample.get('question', sample.get('conversations', [{}])[0].get('value', ''))
-        answer = sample.get('answer', sample.get('conversations', [{}])[1].get('value', ''))
+        # Get question and answer - handle multiple data formats
+        question = ''
+        answer = ''
+
+        # Format 1: Direct question/answer fields
+        if 'question' in sample:
+            question = sample['question']
+            answer = sample.get('answer', '')
+        # Format 2: Conversations format
+        elif 'conversations' in sample and len(sample['conversations']) >= 2:
+            question = sample['conversations'][0].get('value', '')
+            answer = sample['conversations'][1].get('value', '')
+        # Format 3: Single conversation (use as question, empty answer)
+        elif 'conversations' in sample and len(sample['conversations']) >= 1:
+            question = sample['conversations'][0].get('value', '')
+            answer = ''
+        else:
+            # Fallback: use any text field
+            question = str(sample.get('text', sample.get('prompt', '')))
+            answer = str(sample.get('response', sample.get('completion', '')))
 
         # Tokenize
         question_ids = self.tokenizer(
